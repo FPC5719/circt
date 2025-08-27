@@ -165,6 +165,9 @@ public:
 
   bool getEmitAllBindFiles() const { return emitAllBindFiles; }
 
+  bool shouldExtractBranchCover() const { return extractBranchCover; }
+  bool shouldLowerCoverPoints() const { return extractBranchCover; }
+
   bool shouldInlineInputOnlyModules() const { return inlineInputOnlyModules; }
 
   DomainMode getDomainMode() const { return domainMode; }
@@ -398,6 +401,11 @@ public:
     return *this;
   }
 
+  FirtoolOptions &setExtractBranchCover(bool value) {
+    extractBranchCover = value;
+    return *this;
+  }
+
   FirtoolOptions &setInlineInputOnlyModules(bool value) {
     inlineInputOnlyModules = value;
     return *this;
@@ -460,6 +468,7 @@ private:
   bool emitAllBindFiles;
   bool inlineInputOnlyModules;
   DomainMode domainMode;
+  bool extractBranchCover;
 };
 
 void registerFirtoolCLOptions();
