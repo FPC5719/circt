@@ -100,6 +100,13 @@ LogicalResult firtool::populateCHIRRTLToLowFIRRTL(mlir::PassManager &pm,
 
   pm.nest<firrtl::CircuitOp>().addPass(firrtl::createDropConst());
 
+  // Coverage instrumentation
+  if (opt.shouldExtractBranchCover())
+    pm.nest<firrtl::CircuitOp>().addPass(
+        firrtl::createFindBranchCoverPointPass());
+  if (opt.shouldLowerCoverPoints())
+    pm.nest<firrtl::CircuitOp>().addPass(firrtl::createLowerCoverPointsPass());
+
   if (opt.shouldDedup()) {
     firrtl::DedupOptions opts;
     opts.dedupClasses = opt.shouldDedupClasses();
@@ -850,6 +857,11 @@ public:
   llvm::cl::opt<bool> lintXmrsInDesign{
       "lint-xmrs-in-design", llvm::cl::desc("Lint XMRs in the design"),
       llvm::cl::init(false)};
+
+  llvm::cl::opt<bool> extractBranchCover{
+      "extract-branch-cover",
+      llvm::cl::desc("Instrument the circuit to extract branch coverage"),
+      llvm::cl::init(false)};
 };
 } // namespace
 
@@ -891,7 +903,7 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
       disableWireElimination(false), lintStaticAsserts(true),
       lintXmrsInDesign(true), emitAllBindFiles(false),
       inlineInputOnlyModules(false), domainMode(DomainMode::Disable),
-      stripDomain(true) {
+      stripDomain(true), extractBranchCover(false) {
   if (!clOptions.isConstructed())
     return;
   outputFilename = clOptions->outputFilename;
@@ -947,4 +959,5 @@ circt::firtool::FirtoolOptions::FirtoolOptions()
   stripDomain = clOptions->stripDomain;
   skippedDomains.assign(clOptions->skippedDomains.begin(),
                         clOptions->skippedDomains.end());
+  extractBranchCover = clOptions->extractBranchCover;
 }
