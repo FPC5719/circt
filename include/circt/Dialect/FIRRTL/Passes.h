@@ -95,6 +95,10 @@ LogicalResult runFullReset(CircuitOp circuit, InstanceGraph &ig,
 #define GEN_PASS_DECL
 #include "circt/Dialect/FIRRTL/Passes.h.inc"
 
+std::unique_ptr<mlir::Pass> createLowerCoverPointsPass();
+
+std::unique_ptr<mlir::Pass> createFindBranchCoverPointPass();
+
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
 #include "circt/Dialect/FIRRTL/Passes.h.inc"
