@@ -582,7 +582,9 @@ def DropName : Pass<"firrtl-drop-names", "firrtl::FModuleOp"> {
                 "Preserve values with meaningful names"),
               clEnumValN(PreserveValues::All, "all",
                 "Preserve all values"))
-           }]>
+           }]>,
+    ListOption<"preserveModules", "preserve-modules", "std::string",
+               "specify the modules to be preserved">
   ];
   let statistics = [
     Statistic<"numNamesDropped", "num-names-dropped",

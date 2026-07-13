@@ -23,6 +23,23 @@ CMD=${1:-"./utils/run-tests-docker.sh"}
 VER=${2:-"v20"}
 REPO_ROOT=$(cd "$(dirname "$BASH_SOURCE[0]")/.." && pwd)
 
+# Bind-mount the caller's working directory too when it lives outside the
+# CIRCT repo, so that commands operating on files outside the CIRCT tree
+# (e.g. running firtool on a user project) can access them at the same
+# absolute path inside the container.
+CALLER_PWD="$PWD"
+EXTRA_MOUNT=""
+if [ "$CALLER_PWD" != "$REPO_ROOT" ] && [[ "$CALLER_PWD" != "$REPO_ROOT"/* ]]; then
+  EXTRA_MOUNT="-v $CALLER_PWD:$CALLER_PWD"
+fi
+
 cd $REPO_ROOT
-docker run -it --rm -v $REPO_ROOT:$REPO_ROOT -u $UID:$(id -g) -w $REPO_ROOT \
+# Only allocate a TTY when stdin is actually a terminal. Running with `-t`
+# from a non-interactive context (e.g. `make`) fails with "cannot attach
+# stdin to a TTY-enabled container because stdin is not a terminal".
+DOCKER_RUN_FLAGS="-i"
+if [ -t 0 ]; then
+  DOCKER_RUN_FLAGS="-it"
+fi
+docker run $DOCKER_RUN_FLAGS --rm -v $REPO_ROOT:$REPO_ROOT $EXTRA_MOUNT -u $UID:$(id -g) -w $REPO_ROOT \
   ghcr.io/circt/images/circt-integration-test:$VER $CMD
