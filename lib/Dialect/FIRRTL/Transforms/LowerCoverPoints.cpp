@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FormatVariadic.h"
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -179,11 +180,11 @@ void LowerCoverPointsPass::runOnOperation() {
           auto zero = builder.create<ConstantOp>(loc, t, APInt(c->width, 0));
           // Convert AsyncReset to UInt for MuxPrimOp.
           auto resetUInt = builder.create<AsUIntPrimOp>(loc, reset);
-          auto mux =
-              builder.create<MuxPrimOp>(loc, resetUInt.getResult(), zero, xorVal.getResult());
+          auto mux = builder.create<MuxPrimOp>(loc, resetUInt.getResult(), zero,
+                                               xorVal.getResult());
           builder.create<ConnectOp>(loc, xorAsyncReg.getResult(),
                                     mux.getResult());
-          c->cover = xorAsyncReg;  // Use the async-reset register in this case.
+          c->cover = xorAsyncReg; // Use the async-reset register in this case.
         } else {
           builder.create<ConnectOp>(loc, xorReg.getResult(),
                                     xorVal.getResult());
@@ -234,8 +235,16 @@ void LowerCoverPointsPass::runOnOperation() {
                             << " cover points for group: " << groupName);
   }
 
+  const char *noopHome = std::getenv("NOOP_HOME");
+  if (!noopHome || !*noopHome) {
+    circuitOp.emitError("NOOP_HOME must be set when branch coverage "
+                        "instrumentation is enabled");
+    signalPassFailure();
+    return;
+  }
+
   std::string outputDir =
-      getenv("NOOP_HOME") + std::string("/build/generated-src");
+      (std::filesystem::path(noopHome) / "build" / "generated-src").string();
   std::filesystem::create_directories(outputDir);
   generateCoverCppHeader(outputDir);
   generateCoverCpp(outputDir);
