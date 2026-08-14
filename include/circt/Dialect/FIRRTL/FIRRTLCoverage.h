@@ -36,7 +36,7 @@ public:
 
   int width = -1;
 
-  Operation *cover = nullptr;  // FIX: initialize to avoid undefined behavior
+  Operation *cover = nullptr;
 };
 
 } // namespace firrtl
