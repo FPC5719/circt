@@ -2,10 +2,20 @@ name: GitHub Release
 
 on:
   schedule:
+    # Scheduled workflows run from the repository's default branch. Keep the
+    # active firtool release branch as the default branch.
     # Runs at 23:15 Asia/Shanghai (UTC+8) => 15:15 UTC
     - cron: '15 15 * * *'
   push:
     branches: [ firtool-*.*.* ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firtool-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # 1. Build artifacts in parallel
@@ -34,7 +44,7 @@ jobs:
       - name: Setup ninja
         run: |
           apt update
-          apt install -y ninja-build
+          apt install -y lld ninja-build
 
       - name: Configure
         run: |
@@ -44,7 +54,8 @@ jobs:
             -DLLVM_TARGETS_TO_BUILD=host          \
             -DLLVM_ENABLE_PROJECTS=mlir           \
             -DLLVM_EXTERNAL_PROJECTS=circt        \
-            -DLLVM_EXTERNAL_CIRCT_SOURCE_DIR=$PWD \
+            -DLLVM_EXTERNAL_CIRCT_SOURCE_DIR="$PWD" \
+            -DLLVM_ENABLE_LLD=ON                  \
             -DLLVM_BUILD_EXAMPLES=OFF             \
             -DLLVM_ENABLE_ZSTD=OFF                \
             -DVERILATOR_DISABLE=ON                \
@@ -52,7 +63,7 @@ jobs:
 
       - name: Build
         run: |
-          ninja -C build firtool
+          ninja -C build bin/firtool
 
       - name: Rename
         run: |
@@ -66,9 +77,11 @@ jobs:
 
   # 2. Create release if there are new commits since last tag
   release:
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,29 +101,43 @@ jobs:
       - name: Fetch all tags
         run: git fetch --tags --force
 
-      - name: Check for commits since last release
-        id: check_changes
-        shell: bash
-        run: |
-          LATEST_TAG="$(git tag -l "firtool-${VERSION}-*" --sort=-v:refname | head -n1 || true)"
-          if [ -z "$LATEST_TAG" ]; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            COUNT=$(git rev-list "${LATEST_TAG}..HEAD" --count)
-            if [ "$COUNT" -gt 0 ]; then
-              echo "changed=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "changed=false" >> "$GITHUB_OUTPUT"
-            fi
-          fi
-
       - name: Set release date (UTC+8)
         run: |
           DATE=$(TZ=Asia/Shanghai date +%Y%m%d)
           echo "RELEASE_TAG=firtool-${VERSION}-${DATE}" >> "$GITHUB_ENV"
 
+      - name: Check for commits since last release
+        id: check_changes
+        shell: bash
+        run: |
+          LATEST_TAG="$(git tag -l "firtool-${VERSION}-*" --sort=-v:refname | head -n1 || true)"
+          if git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
+            if [ "$(git rev-parse "${RELEASE_TAG}^{}")" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::${RELEASE_TAG} already exists at a different commit"
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$LATEST_TAG" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          else
+            if ! git merge-base --is-ancestor "$LATEST_TAG" HEAD; then
+              echo "::error::Latest release tag ${LATEST_TAG} is not an ancestor of HEAD"
+              exit 1
+            fi
+            COUNT=$(git rev-list "${LATEST_TAG}..HEAD" --count)
+            if [ "$COUNT" -gt 0 ]; then
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+              echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
       - name: Create git tag
-        if: steps.check_changes.outputs.changed == 'true'
+        if: steps.check_changes.outputs.publish == 'true' && steps.check_changes.outputs.tag_exists != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -118,7 +145,7 @@ jobs:
           git push origin "${{ env.RELEASE_TAG }}"
 
       - name: Create release
-        if: steps.check_changes.outputs.changed == 'true'
+        if: steps.check_changes.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
