@@ -196,12 +196,13 @@ Flow firrtl::foldFlow(Value val, Flow accumulatedFlow) {
       // Registers, Wires, and behavioral memory ports are always Duplex.
       .Case<RegOp, RegResetOp, WireOp, MemoryPortOp>(
           [](auto) { return Flow::Duplex; })
-      .Case<InstanceOp, InstanceChoiceOp>([&](auto inst) {
-        auto resultNo = cast<OpResult>(val).getResultNumber();
-        if (inst.getPortDirection(resultNo) == Direction::Out)
-          return accumulatedFlow;
-        return swapFlow(accumulatedFlow);
-      })
+      .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp>(
+          [&](auto inst) {
+            auto resultNo = cast<OpResult>(val).getResultNumber();
+            if (inst.getPortDirection(resultNo) == Direction::Out)
+              return accumulatedFlow;
+            return swapFlow(accumulatedFlow);
+          })
       .Case<MemOp>([&](auto op) {
         // only debug ports with RefType have source flow.
         if (type_isa<RefType>(val.getType()))
@@ -1881,13 +1882,12 @@ static LogicalResult verifyPortSymbolUses(FModuleLike module,
     }
 
     if (auto choiceType = dyn_cast<ChoiceType>(type)) {
-      auto *symbol = symbolTable.lookupSymbolIn(circuitOp,
-                                                 choiceType.getDomain());
+      auto *symbol =
+          symbolTable.lookupSymbolIn(circuitOp, choiceType.getDomain());
       if (!symbol)
-        return module.emitOpError()
-               << "choice port '" << module.getPortName(i)
-               << "' references undefined choice domain '"
-               << choiceType.getDomain().getValue() << "'";
+        return module.emitOpError() << "choice port '" << module.getPortName(i)
+                                    << "' references undefined choice domain '"
+                                    << choiceType.getDomain().getValue() << "'";
       if (!isa<ChoiceDomainOp>(symbol))
         return module.emitOpError()
                << "choice port '" << module.getPortName(i)
@@ -2257,8 +2257,8 @@ LogicalResult ChoiceDomainOp::verify() {
   for (auto choiceCase : getBody().getOps<ChoiceCaseOp>()) {
     auto value = choiceCase.getValue();
     if (width != 64 && value >= (uint64_t{1} << width))
-      return choiceCase.emitOpError() << "value " << value
-                                      << " does not fit domain width " << width;
+      return choiceCase.emitOpError()
+             << "value " << value << " does not fit domain width " << width;
     if (!encodings.insert(value).second)
       return choiceCase.emitOpError() << "duplicate choice encoding " << value;
   }
@@ -2275,8 +2275,7 @@ ChoiceConstantOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto domain = symbolTable.lookupNearestSymbolFrom<ChoiceDomainOp>(
       *this, FlatSymbolRefAttr::get(domainName));
   if (!domain)
-    return emitOpError() << "choice domain " << domainName
-                         << " does not exist";
+    return emitOpError() << "choice domain " << domainName << " does not exist";
 
   auto choiceCase =
       symbolTable.lookupNearestSymbolFrom<ChoiceCaseOp>(*this, caseRef);
@@ -3384,6 +3383,222 @@ InstanceChoiceOp::cloneWithErasedPorts(const llvm::BitVector &erasures) {
 }
 
 FInstanceLike InstanceChoiceOp::cloneWithErasedPortsAndReplaceUses(
+    const llvm::BitVector &erasures) {
+  auto clone = cloneWithErasedPorts(erasures);
+  replaceUsesRespectingErasedPorts(getOperation(), clone, erasures);
+  return clone;
+}
+
+//===----------------------------------------------------------------------===//
+// ParamInstanceChoiceOp
+//===----------------------------------------------------------------------===//
+
+StringRef ParamInstanceChoiceOp::getInstanceName() { return getName(); }
+
+StringAttr ParamInstanceChoiceOp::getInstanceNameAttr() {
+  return getNameAttr();
+}
+
+ArrayAttr ParamInstanceChoiceOp::getReferencedModuleNamesAttr() {
+  SmallVector<Attribute> names;
+  names.reserve(getModuleNamesAttr().size());
+  for (auto moduleName : getModuleNamesAttr())
+    names.push_back(StringAttr::get(
+        getContext(), cast<FlatSymbolRefAttr>(moduleName).getValue()));
+  return ArrayAttr::get(getContext(), names);
+}
+
+std::optional<size_t> ParamInstanceChoiceOp::getTargetResultIndex() {
+  return std::nullopt;
+}
+
+void ParamInstanceChoiceOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
+  StringRef base = getName().empty() ? "inst" : getName();
+  for (auto [result, name] : llvm::zip(getResults(), getPortNames()))
+    setNameFn(result, (base + "_" + cast<StringAttr>(name).getValue()).str());
+}
+
+LogicalResult ParamInstanceChoiceOp::verify() {
+  if (getCaseNamesAttr().empty())
+    return emitOpError("must have at least one alternative case");
+  if (getModuleNamesAttr().size() != getCaseNamesAttr().size() + 1)
+    return emitOpError("number of referenced modules does not match the "
+                       "number of choice cases");
+  if (getInnerSymAttr())
+    return emitOpError("inner symbols are not supported on parameterized "
+                       "instances");
+  if (!getAnnotations().empty())
+    return emitOpError("annotations are not supported on parameterized "
+                       "instances");
+  if (llvm::any_of(getPortAnnotations(), [](Attribute attr) {
+        return !cast<ArrayAttr>(attr).empty();
+      }))
+    return emitOpError("port annotations are not supported on parameterized "
+                       "instances");
+  if (auto *definingOp = getSelector().getDefiningOp())
+    if (!isa<ChoiceConstantOp>(definingOp))
+      return emitOpError("selector must be an elaboration-time choice value, "
+                         "not the result of a hardware operation");
+
+  return success();
+}
+
+LogicalResult
+ParamInstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto selectorType = getSelector().getType();
+  auto domainName = selectorType.getDomain().getAttr();
+  auto domain = symbolTable.lookupNearestSymbolFrom<ChoiceDomainOp>(
+      *this, selectorType.getDomain());
+  if (!domain)
+    return emitOpError() << "choice domain " << domainName << " does not exist";
+
+  auto verifyTarget = [&](FlatSymbolRefAttr moduleRef) -> LogicalResult {
+    if (failed(instance_like_impl::verifyReferencedModule(*this, symbolTable,
+                                                          moduleRef)))
+      return failure();
+    auto module =
+        symbolTable.lookupNearestSymbolFrom<FModuleLike>(*this, moduleRef);
+    if (!isa<FModuleOp>(module))
+      return emitOpError() << "parameterized instances require an internal "
+                           << "module target, but " << moduleRef
+                           << " is not an internal module";
+    for (auto type : module.getPortTypes())
+      if (type_isa<RefType>(cast<TypeAttr>(type).getValue()))
+        return emitOpError() << "parameterized instances do not support "
+                             << "probe ports";
+    return success();
+  };
+
+  auto moduleNames = getModuleNamesAttr();
+  if (failed(verifyTarget(cast<FlatSymbolRefAttr>(moduleNames[0]))))
+    return failure();
+
+  SmallDenseSet<SymbolRefAttr, 4> seenCases;
+  for (size_t i = 0, e = getCaseNamesAttr().size(); i != e; ++i) {
+    auto caseRef = cast<SymbolRefAttr>(getCaseNamesAttr()[i]);
+    if (caseRef.getNestedReferences().size() != 1)
+      return emitOpError() << "choice case " << caseRef
+                           << " must name a case in a choice domain";
+    if (caseRef.getRootReference() != domainName)
+      return emitOpError() << "choice case " << caseRef
+                           << " is not in selector domain " << domainName;
+    if (!seenCases.insert(caseRef).second)
+      return emitOpError() << "duplicate choice case " << caseRef;
+    if (!symbolTable.lookupNearestSymbolFrom<ChoiceCaseOp>(*this, caseRef))
+      return emitOpError() << "choice domain " << domainName
+                           << " does not contain choice case " << caseRef;
+
+    if (failed(verifyTarget(cast<FlatSymbolRefAttr>(moduleNames[i + 1]))))
+      return failure();
+  }
+
+  return success();
+}
+
+FlatSymbolRefAttr
+ParamInstanceChoiceOp::getTargetOrDefaultAttr(ChoiceCaseOp choiceCase) {
+  auto moduleNames = getModuleNamesAttr();
+  for (size_t i = 0, e = getCaseNamesAttr().size(); i != e; ++i) {
+    auto caseRef = cast<SymbolRefAttr>(getCaseNamesAttr()[i]);
+    if (caseRef.getLeafReference() == choiceCase.getSymName())
+      return cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+  }
+  return getDefaultTargetAttr();
+}
+
+SmallVector<std::pair<SymbolRefAttr, FlatSymbolRefAttr>, 1>
+ParamInstanceChoiceOp::getTargetChoices() {
+  SmallVector<std::pair<SymbolRefAttr, FlatSymbolRefAttr>, 1> choices;
+  auto moduleNames = getModuleNamesAttr();
+  for (size_t i = 0, e = getCaseNamesAttr().size(); i != e; ++i)
+    choices.emplace_back(cast<SymbolRefAttr>(getCaseNamesAttr()[i]),
+                         cast<FlatSymbolRefAttr>(moduleNames[i + 1]));
+  return choices;
+}
+
+FInstanceLike ParamInstanceChoiceOp::cloneWithInsertedPorts(
+    ArrayRef<std::pair<unsigned, PortInfo>> insertions) {
+  auto *context = getContext();
+  auto empty = ArrayAttr::get(context, {});
+  SmallVector<Type> types;
+  SmallVector<bool> directions;
+  SmallVector<Attribute> names, annotations, domains;
+  auto oldCount = getNumPorts();
+  SmallVector<unsigned> indexMap(oldCount);
+  size_t inserted = 0;
+  for (size_t i = 0; i < oldCount; ++i) {
+    while (inserted < insertions.size() && insertions[inserted].first <= i)
+      ++inserted;
+    indexMap[i] = i + inserted;
+  }
+  inserted = 0;
+  for (size_t i = 0; i < oldCount; ++i) {
+    while (inserted < insertions.size() && insertions[inserted].first <= i) {
+      auto &info = insertions[inserted++].second;
+      types.push_back(info.type);
+      directions.push_back(info.direction == Direction::Out);
+      names.push_back(info.name);
+      annotations.push_back(info.annotations.getArrayAttr());
+      domains.push_back(fixDomainInfoInsertions(
+          context, info.domains ? info.domains : empty, indexMap));
+    }
+    types.push_back(getResult(i).getType());
+    directions.push_back(getPortDirection(i) == Direction::Out);
+    names.push_back(getPortNameAttr(i));
+    annotations.push_back(getPortAnnotations()[i]);
+    domains.push_back(
+        fixDomainInfoInsertions(context, getDomainInfo()[i], indexMap));
+  }
+  while (inserted < insertions.size()) {
+    auto &info = insertions[inserted++].second;
+    types.push_back(info.type);
+    directions.push_back(info.direction == Direction::Out);
+    names.push_back(info.name);
+    annotations.push_back(info.annotations.getArrayAttr());
+    domains.push_back(fixDomainInfoInsertions(
+        context, info.domains ? info.domains : empty, indexMap));
+  }
+  OpBuilder builder(*this);
+  return ParamInstanceChoiceOp::create(
+      builder, getLoc(), types, getSelector(), getModuleNamesAttr(),
+      getCaseNamesAttr(), getNameAttr(), getNameKindAttr(),
+      direction::packAttribute(context, directions),
+      ArrayAttr::get(context, names), ArrayAttr::get(context, domains),
+      getAnnotationsAttr(), ArrayAttr::get(context, annotations),
+      getLayersAttr(), getInnerSymAttr());
+}
+
+FInstanceLike ParamInstanceChoiceOp::cloneWithInsertedPortsAndReplaceUses(
+    ArrayRef<std::pair<unsigned, PortInfo>> insertions) {
+  auto clone = cloneWithInsertedPorts(insertions);
+  replaceUsesRespectingInsertedPorts(getOperation(), clone, insertions);
+  return clone;
+}
+
+FInstanceLike
+ParamInstanceChoiceOp::cloneWithErasedPorts(const llvm::BitVector &erasures) {
+  assert(erasures.size() >= getNumResults());
+  SmallVector<Type> types = removeElementsAtIndices<Type>(
+      SmallVector<Type>(result_type_begin(), result_type_end()), erasures);
+  auto directions = removeElementsAtIndices<bool>(
+      SmallVector<bool>(getPortDirections().begin(), getPortDirections().end()),
+      erasures);
+  auto names = removeElementsAtIndices(getPortNames().getValue(), erasures);
+  auto annotations =
+      removeElementsAtIndices(getPortAnnotations().getValue(), erasures);
+  auto domains = fixDomainInfoDeletions(getContext(), getDomainInfoAttr(),
+                                        erasures, /*supportsEmptyAttr=*/false);
+  OpBuilder builder(*this);
+  return ParamInstanceChoiceOp::create(
+      builder, getLoc(), types, getSelector(), getModuleNamesAttr(),
+      getCaseNamesAttr(), getNameAttr(), getNameKindAttr(),
+      direction::packAttribute(getContext(), directions),
+      ArrayAttr::get(getContext(), names), domains, getAnnotationsAttr(),
+      ArrayAttr::get(getContext(), annotations), getLayersAttr(),
+      getInnerSymAttr());
+}
+
+FInstanceLike ParamInstanceChoiceOp::cloneWithErasedPortsAndReplaceUses(
     const llvm::BitVector &erasures) {
   auto clone = cloneWithErasedPorts(erasures);
   replaceUsesRespectingErasedPorts(getOperation(), clone, erasures);
