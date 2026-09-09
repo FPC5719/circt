@@ -521,6 +521,39 @@ def OptionCaseOp : FIRRTLOp<
   ];
 }
 
+def ChoiceDomainOp : FIRRTLOp<"choice_domain", [
+    IsolatedFromAbove,
+    Symbol,
+    SymbolTable,
+    NoTerminator,
+    HasParent<"firrtl::CircuitOp">
+]> {
+  let summary = "An elaboration-time choice domain";
+  let description = [{
+    Defines a circuit-scoped, nominal domain of elaboration-time choices. The
+    encoding width is fixed and every nested `firrtl.choice_case` has an
+    explicit, unique unsigned encoding.
+  }];
+  let arguments = (ins SymbolNameAttr:$sym_name, UI32Attr:$width);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    $sym_name `width` $width attr-dict-with-keyword $body
+  }];
+  let hasVerifier = true;
+}
+
+def ChoiceCaseOp : FIRRTLOp<
+  "choice_case", [Symbol, HasParent<"firrtl::ChoiceDomainOp">]
+> {
+  let summary = "A named choice-domain encoding";
+  let arguments = (ins SymbolNameAttr:$sym_name, UI64Attr:$value);
+  let results = (outs);
+  let assemblyFormat = [{
+    $sym_name `=` $value attr-dict
+  }];
+}
+
 def FormalOp : FIRRTLOp<"formal", [
   HasParent<"firrtl::CircuitOp">,
   DeclareOpInterfaceMethods<Symbol>,

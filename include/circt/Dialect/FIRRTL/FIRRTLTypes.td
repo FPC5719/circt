@@ -235,6 +235,9 @@ def BoolType : FIRRTLDialectTypeHelper<"BoolType", "boolean type">,
 def DoubleType : FIRRTLDialectTypeHelper<"DoubleType", "double type">,
   BuildableType<"::circt::firrtl::DoubleType::get($_builder.getContext())">;
 
+def ChoiceType : FIRRTLDialectTypeHelper<
+  "ChoiceType", "an elaboration-time choice type">;
+
 def PathType : FIRRTLDialectTypeHelper<"PathType", "path type">,
   BuildableType<"::circt::firrtl::PathType::get($_builder.getContext())">;
 

@@ -1257,6 +1257,22 @@ def StringConstantOp : FIRRTLOp<"string", [Pure, ConstantLike]> {
   let assemblyFormat = "$value attr-dict";
 }
 
+def ChoiceConstantOp : FIRRTLOp<"choice.constant", [
+    Pure,
+    ConstantLike,
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>
+]> {
+  let summary = "Produce a named elaboration-time choice";
+  let description = [{
+    Produces a choice value for a named case in a circuit-scoped choice domain.
+    Choice values are property values for direct `firrtl.propassign` plumbing,
+    never hardware values.
+  }];
+  let arguments = (ins SymbolRefAttr:$caseSymbol);
+  let results = (outs ChoiceType:$result);
+  let assemblyFormat = "$caseSymbol attr-dict `:` type($result)";
+}
+
 def FIntegerConstantOp : FIRRTLOp<"integer", [Pure, ConstantLike]> {
   let summary = "Produce a constant integer value";
   let description = [{
@@ -1569,6 +1585,7 @@ def UnknownValueOp : FIRRTLOp<"unknown", [
   }];
   let arguments = (ins);
   let results = (outs PropertyType:$result);
+  let hasVerifier = 1;
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 

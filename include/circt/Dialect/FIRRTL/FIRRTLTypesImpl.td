@@ -575,6 +575,7 @@ def ListImpl : PropImplType<"List"> {
   let parameters = (ins TypeParameter<"circt::firrtl::PropertyType", "element type">:$elementType);
   let genStorageClass = true;
   let genAccessors = true;
+  let genVerifyDecl = true;
   let typeName = "firrtl.propList";
 }
 
@@ -591,6 +592,7 @@ def RegistryImpl : PropImplType<"Registry"> {
                                       "element type">:$elementType);
   let genStorageClass = true;
   let genAccessors = true;
+  let genVerifyDecl = true;
   let typeName = "firrtl.propRegistry";
 }
 
@@ -614,6 +616,14 @@ def DoubleImpl : PropImplType<"Double"> {
   let parameters = (ins);
   let genStorageClass = true;
   let typeName = "firrtl.propDouble";
+}
+
+def ChoiceImpl : PropImplType<"Choice", [], "::circt::firrtl::PropertyType"> {
+  let summary = [{An elaboration-time choice from a circuit-scoped domain.}];
+  let parameters = (ins "FlatSymbolRefAttr":$domain);
+  let genStorageClass = true;
+  let genAccessors = true;
+  let typeName = "firrtl.propChoice";
 }
 
 def FStringImpl : FIRRTLImplType<"FString", [], "::circt::firrtl::FIRRTLType" > {

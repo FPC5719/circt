@@ -1847,6 +1847,10 @@ static LogicalResult verifyPortSymbolUses(FModuleLike module,
   for (size_t i = 0, e = module.getNumPorts(); i < e; ++i) {
     auto type = module.getPortType(i);
 
+    if (isa<ChoiceType>(type) && module.getPortDirection(i) != Direction::In)
+      return module.emitOpError() << "choice port '" << module.getPortName(i)
+                                  << "' must be an input property";
+
     if (auto refType = type_dyn_cast<RefType>(type)) {
       if (failed(verifyProbeType(
               refType, module.getPortLocation(i), circuitOp, symbolTable,
@@ -1873,6 +1877,22 @@ static LogicalResult verifyPortSymbolUses(FModuleLike module,
       if (failed(
               domainType.verifySymbolUses(module.getOperation(), symbolTable)))
         return failure();
+      continue;
+    }
+
+    if (auto choiceType = dyn_cast<ChoiceType>(type)) {
+      auto *symbol = symbolTable.lookupSymbolIn(circuitOp,
+                                                 choiceType.getDomain());
+      if (!symbol)
+        return module.emitOpError()
+               << "choice port '" << module.getPortName(i)
+               << "' references undefined choice domain '"
+               << choiceType.getDomain().getValue() << "'";
+      if (!isa<ChoiceDomainOp>(symbol))
+        return module.emitOpError()
+               << "choice port '" << module.getPortName(i)
+               << "' references symbol '" << choiceType.getDomain().getValue()
+               << "' which is not a choice domain";
       continue;
     }
   }
@@ -2217,8 +2237,56 @@ LogicalResult ClassOp::verify() {
       emitOpError("ports on a class must be properties");
       return failure();
     }
+    if (isa<ChoiceType>(type))
+      return emitOpError("choice properties are not allowed on classes");
   }
 
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// ChoiceDomainOp and ChoiceConstantOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ChoiceDomainOp::verify() {
+  auto width = getWidth();
+  if (width == 0 || width > 64)
+    return emitOpError("width must be between 1 and 64");
+
+  llvm::SmallDenseSet<uint64_t, 4> encodings;
+  for (auto choiceCase : getBody().getOps<ChoiceCaseOp>()) {
+    auto value = choiceCase.getValue();
+    if (width != 64 && value >= (uint64_t{1} << width))
+      return choiceCase.emitOpError() << "value " << value
+                                      << " does not fit domain width " << width;
+    if (!encodings.insert(value).second)
+      return choiceCase.emitOpError() << "duplicate choice encoding " << value;
+  }
+  return success();
+}
+
+LogicalResult
+ChoiceConstantOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto caseRef = getCaseSymbol();
+  if (caseRef.getNestedReferences().size() != 1)
+    return emitOpError("case must name a case in a choice domain");
+
+  auto domainName = caseRef.getRootReference();
+  auto domain = symbolTable.lookupNearestSymbolFrom<ChoiceDomainOp>(
+      *this, FlatSymbolRefAttr::get(domainName));
+  if (!domain)
+    return emitOpError() << "choice domain " << domainName
+                         << " does not exist";
+
+  auto choiceCase =
+      symbolTable.lookupNearestSymbolFrom<ChoiceCaseOp>(*this, caseRef);
+  if (!choiceCase)
+    return emitOpError() << "choice domain " << domainName
+                         << " does not contain choice case " << caseRef;
+
+  if (getType().getDomain().getAttr() != domainName)
+    return emitOpError() << "result type " << getType()
+                         << " does not match choice domain " << domainName;
   return success();
 }
 
@@ -5056,6 +5124,12 @@ UnknownValueOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError() << "refers to a non-class type ("
                          << className.getAttr() << ")";
 
+  return success();
+}
+
+LogicalResult UnknownValueOp::verify() {
+  if (isa<ChoiceType>(getType()))
+    return emitOpError("cannot produce an unknown choice value");
   return success();
 }
 

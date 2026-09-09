@@ -64,6 +64,7 @@ class RegistryType;
 class PathType;
 class BoolType;
 class DoubleType;
+class ChoiceType;
 class BaseTypeAliasType;
 class FStringType;
 class DomainType;
@@ -332,7 +333,8 @@ public:
   /// Support method to enable LLVM-style type casting.
   static bool classof(Type type) {
     return llvm::isa<AnyRefType, ClassType, StringType, FIntegerType, ListType,
-                     RegistryType, PathType, BoolType, DoubleType>(type);
+                     RegistryType, PathType, BoolType, DoubleType,
+                     ChoiceType>(type);
   }
 
 protected:
