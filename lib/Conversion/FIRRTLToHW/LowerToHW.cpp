@@ -1867,6 +1867,7 @@ struct FIRRTLLowering : public FIRRTLVisitor<FIRRTLLowering, LogicalResult> {
   LogicalResult visitDecl(MemOp op);
   LogicalResult visitDecl(InstanceOp oldInstance);
   LogicalResult visitDecl(InstanceChoiceOp oldInstanceChoice);
+  LogicalResult visitDecl(ParamInstanceChoiceOp op);
   LogicalResult visitDecl(VerbatimWireOp op);
   LogicalResult visitDecl(ContractOp op);
 
@@ -4323,6 +4324,12 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
       });
 
   return success();
+}
+
+LogicalResult FIRRTLLowering::visitDecl(ParamInstanceChoiceOp op) {
+  return op.emitOpError(
+      "cannot lower parameterized instance choice; materialize its selector "
+      "to firrtl.instance first");
 }
 
 LogicalResult FIRRTLLowering::visitDecl(ContractOp oldOp) {

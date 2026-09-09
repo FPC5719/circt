@@ -1259,7 +1259,6 @@ def StringConstantOp : FIRRTLOp<"string", [Pure, ConstantLike]> {
 
 def ChoiceConstantOp : FIRRTLOp<"choice.constant", [
     Pure,
-    ConstantLike,
     DeclareOpInterfaceMethods<SymbolUserOpInterface>
 ]> {
   let summary = "Produce a named elaboration-time choice";
