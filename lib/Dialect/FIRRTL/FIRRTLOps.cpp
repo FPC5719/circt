@@ -1989,8 +1989,6 @@ void FMemModuleOp::getAsmBlockArgumentNames(
 
 ArrayAttr FMemModuleOp::getParameters() { return {}; }
 
-ArrayAttr FModuleOp::getParameters() { return {}; }
-
 Convention FIntModuleOp::getConvention() { return Convention::Internal; }
 
 ConventionAttr FIntModuleOp::getConventionAttr() {
@@ -2682,6 +2680,8 @@ InstanceOp::cloneWithErasedPorts(const llvm::BitVector &erasures) {
 
   if (auto outputFile = (*this)->getAttr("output_file"))
     clone->setAttr("output_file", outputFile);
+  if (auto parameters = (*this)->getAttr("parameters"))
+    clone->setAttr("parameters", parameters);
 
   return clone;
 }
@@ -2787,6 +2787,8 @@ FInstanceLike InstanceOp::cloneWithInsertedPorts(
 
   if (auto outputFile = (*this)->getAttr("output_file"))
     clone->setAttr("output_file", outputFile);
+  if (auto parameters = (*this)->getAttr("parameters"))
+    clone->setAttr("parameters", parameters);
 
   return clone;
 }
@@ -3441,6 +3443,9 @@ void ParamInstanceChoiceOp::getAsmResultNames(OpAsmSetValueNameFn setNameFn) {
 }
 
 LogicalResult ParamInstanceChoiceOp::verify() {
+  if (bool(getSelector()) == bool(getSelectorParameterAttr()))
+    return emitOpError("requires exactly one of a choice selector operand or "
+                       "a materialized selector parameter");
   if (getCaseNamesAttr().empty())
     return emitOpError("must have at least one alternative case");
   if (getModuleNamesAttr().size() != getCaseNamesAttr().size() + 1)
@@ -3457,20 +3462,32 @@ LogicalResult ParamInstanceChoiceOp::verify() {
       }))
     return emitOpError("port annotations are not supported on parameterized "
                        "instances");
-  if (auto *definingOp = getSelector().getDefiningOp())
-    if (!isa<ChoiceConstantOp>(definingOp))
-      return emitOpError("selector must be an elaboration-time choice value, "
-                         "not the result of a hardware operation");
+  if (auto selector = getSelector()) {
+    if (auto *definingOp = selector.getDefiningOp())
+      if (!isa<ChoiceConstantOp>(definingOp))
+        return emitOpError("selector must be an elaboration-time choice value, "
+                           "not the result of a hardware operation");
+  } else {
+    auto value = getSelectorParameterAttr().getValue();
+    if (!value || !isa<IntegerAttr, ParamDeclRefAttr>(value))
+      return emitOpError("materialized selector must be an integer literal "
+                         "or parameter reference");
+  }
 
   return success();
 }
 
 LogicalResult
 ParamInstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  auto selectorType = getSelector().getType();
-  auto domainName = selectorType.getDomain().getAttr();
-  auto domain = symbolTable.lookupNearestSymbolFrom<ChoiceDomainOp>(
-      *this, selectorType.getDomain());
+  FlatSymbolRefAttr domainRef;
+  if (auto selector = getSelector())
+    domainRef = selector.getType().getDomain();
+  else
+    domainRef = FlatSymbolRefAttr::get(
+        cast<SymbolRefAttr>(getCaseNamesAttr()[0]).getRootReference());
+  auto domainName = domainRef.getAttr();
+  auto domain =
+      symbolTable.lookupNearestSymbolFrom<ChoiceDomainOp>(*this, domainRef);
   if (!domain)
     return emitOpError() << "choice domain " << domainName << " does not exist";
 
@@ -3512,6 +3529,13 @@ ParamInstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
     if (failed(verifyTarget(cast<FlatSymbolRefAttr>(moduleNames[i + 1]))))
       return failure();
+  }
+
+  if (auto selectorParameter = getSelectorParameterAttr()) {
+    auto integerType = dyn_cast<IntegerType>(selectorParameter.getType());
+    if (!integerType || integerType.getWidth() != domain.getWidth())
+      return emitOpError() << "materialized selector parameter must have type "
+                           << "i" << domain.getWidth();
   }
 
   return success();
@@ -3582,9 +3606,9 @@ FInstanceLike ParamInstanceChoiceOp::cloneWithInsertedPorts(
   }
   OpBuilder builder(*this);
   return ParamInstanceChoiceOp::create(
-      builder, getLoc(), types, getSelector(), getModuleNamesAttr(),
-      getCaseNamesAttr(), getNameAttr(), getNameKindAttr(),
-      direction::packAttribute(context, directions),
+      builder, getLoc(), types, getSelector(), getSelectorParameterAttr(),
+      getModuleNamesAttr(), getCaseNamesAttr(), getNameAttr(),
+      getNameKindAttr(), direction::packAttribute(context, directions),
       ArrayAttr::get(context, names), ArrayAttr::get(context, domains),
       getAnnotationsAttr(), ArrayAttr::get(context, annotations),
       getLayersAttr(), getInnerSymAttr());
@@ -3612,9 +3636,9 @@ ParamInstanceChoiceOp::cloneWithErasedPorts(const llvm::BitVector &erasures) {
                                         erasures, /*supportsEmptyAttr=*/false);
   OpBuilder builder(*this);
   return ParamInstanceChoiceOp::create(
-      builder, getLoc(), types, getSelector(), getModuleNamesAttr(),
-      getCaseNamesAttr(), getNameAttr(), getNameKindAttr(),
-      direction::packAttribute(getContext(), directions),
+      builder, getLoc(), types, getSelector(), getSelectorParameterAttr(),
+      getModuleNamesAttr(), getCaseNamesAttr(), getNameAttr(),
+      getNameKindAttr(), direction::packAttribute(getContext(), directions),
       ArrayAttr::get(getContext(), names), domains, getAnnotationsAttr(),
       ArrayAttr::get(getContext(), annotations), getLayersAttr(),
       getInnerSymAttr());
