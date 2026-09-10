@@ -761,6 +761,12 @@ void FIRRTLModuleLowering::runOnOperation() {
               // Option operations are removed after lowering instance choices.
               return success();
             })
+            .Case<ChoiceDomainOp, ChoiceCaseOp>([&](auto) {
+              // Choice domains are retained by the materialization pass until
+              // parameterized instance choices have been lowered. They have
+              // no HW representation and are removed with the circuit below.
+              return success();
+            })
             .Default([&](Operation *op) {
               // We don't know what this op is.  If it has no illegal FIRRTL
               // types, we can forward the operation.  Otherwise, we emit an
@@ -881,8 +887,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib)
@@ -1014,9 +1019,8 @@ FIRRTLModuleLowering::lowerPorts(ArrayRef<PortInfo> firrtlPorts,
 /// `ignoreValues` is true, all values are dropped from module declarations.
 static ArrayAttr getHWParameters(ArrayAttr parameters, MLIRContext *context,
                                  bool ignoreValues) {
-  auto params = llvm::map_range(parameters, [](Attribute a) {
-    return cast<ParamDeclAttr>(a);
-  });
+  auto params = llvm::map_range(
+      parameters, [](Attribute a) { return cast<ParamDeclAttr>(a); });
   if (params.empty())
     return {};
 
@@ -3283,8 +3287,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4331,9 +4334,159 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceChoiceOp oldInstanceChoice) {
 }
 
 LogicalResult FIRRTLLowering::visitDecl(ParamInstanceChoiceOp op) {
-  return op.emitOpError(
-      "cannot lower parameterized instance choice; materialize its selector "
-      "to firrtl.instance first");
+  auto selectorParameter = op.getSelectorParameterAttr();
+  if (!selectorParameter)
+    return op.emitOpError(
+        "cannot lower parameterized instance choice before its selector is "
+        "materialized");
+
+  auto selector = selectorParameter.getValue();
+  Attribute hwSelector = selector;
+  if (auto ref = dyn_cast<firrtl::ParamDeclRefAttr>(selector))
+    hwSelector = hw::ParamDeclRefAttr::get(ref.getName(), ref.getType());
+
+  // The choice domain remains in the FIRRTL circuit while module bodies are
+  // lowered, but this operation has already been moved into its new HW module.
+  // Use the circuit as the symbol-table anchor rather than the moved op.
+  SymbolTableCollection symbols;
+  auto getChoiceCase = [&](SymbolRefAttr caseRef) -> ChoiceCaseOp {
+    return symbols.lookupNearestSymbolFrom<ChoiceCaseOp>(circuitState.circuitOp,
+                                                         caseRef);
+  };
+
+  auto getTargetModule = [&](FlatSymbolRefAttr moduleRef) -> Operation * {
+    auto *node = circuitState.getInstanceGraph().lookup(moduleRef.getAttr());
+    return node ? node->getModule() : nullptr;
+  };
+
+  auto defaultTarget = op.getDefaultTargetAttr();
+  auto *defaultModule = getTargetModule(defaultTarget);
+  if (!defaultModule)
+    return op.emitOpError()
+           << "could not find default module " << defaultTarget;
+
+  SmallVector<PortInfo, 8> portInfo =
+      cast<FModuleLike>(defaultModule).getPorts();
+  SmallVector<Value, 8> inputOperands;
+  if (failed(prepareInstanceOperands(portInfo, op, inputOperands)))
+    return failure();
+
+  // The results of the choice must be available outside of the generate
+  // construct.  Each selected instance drives these common wires.
+  SmallVector<sv::WireOp, 8> outputWires;
+  for (auto [portIndex, port] : llvm::enumerate(portInfo)) {
+    if (!port.isOutput())
+      continue;
+    auto portType = lowerType(port.type);
+    if (!portType)
+      return op.emitOpError("could not lower output port type");
+    if (portType.isInteger(0))
+      continue;
+    auto wire = sv::WireOp::create(
+        builder, portType,
+        (op.getInstanceName() + "." + port.getName().str()).str());
+    outputWires.push_back(wire);
+    if (failed(setLowering(op.getResult(portIndex), wire)))
+      return failure();
+  }
+
+  // Materialized literals are specialized directly.  This deliberately does
+  // not introduce a module parameter or a generate block for a known choice.
+  if (auto literal = dyn_cast<IntegerAttr>(selector)) {
+    auto target = defaultTarget;
+    auto moduleNames = op.getModuleNamesAttr();
+    for (auto [caseRef, moduleRef] : llvm::zip(
+             op.getCaseNamesAttr(), moduleNames.getValue().drop_front())) {
+      auto choiceCase = getChoiceCase(cast<SymbolRefAttr>(caseRef));
+      if (!choiceCase)
+        return op.emitOpError() << "could not find choice case " << caseRef;
+      if (literal.getValue().getZExtValue() == choiceCase.getValue()) {
+        target = cast<FlatSymbolRefAttr>(moduleRef);
+        break;
+      }
+    }
+
+    auto *targetModule = getTargetModule(target);
+    if (!targetModule)
+      return op.emitOpError() << "could not find selected module " << target;
+    auto *newModule = circuitState.getNewModule(targetModule);
+    if (!newModule)
+      return op.emitOpError() << "could not lower selected module " << target;
+
+    auto instance = hw::InstanceOp::create(
+        builder, newModule, op.getNameAttr(), inputOperands,
+        builder.getArrayAttr({}), /*innerSym=*/{});
+    for (auto [wire, result] : llvm::zip(outputWires, instance.getResults()))
+      sv::AssignOp::create(builder, wire, result);
+    return success();
+  }
+
+  auto createInstanceAndAssign = [&](Operation *targetModule,
+                                     StringRef suffix) -> LogicalResult {
+    auto *newModule = circuitState.getNewModule(targetModule);
+    if (!newModule)
+      return op.emitOpError() << "could not lower choice target module";
+
+    SmallString<64> instanceName = op.getInstanceName();
+    instanceName += "_";
+    instanceName += suffix;
+    auto instance = hw::InstanceOp::create(
+        builder, newModule, builder.getStringAttr(instanceName), inputOperands,
+        builder.getArrayAttr({}), /*innerSym=*/{});
+    for (auto [wire, result] : llvm::zip(outputWires, instance.getResults()))
+      sv::AssignOp::create(builder, wire, result);
+    return success();
+  };
+
+  SmallVector<Attribute> casePatterns;
+  SmallVector<Attribute> caseNames;
+  SmallVector<Operation *> caseModules;
+  auto moduleNames = op.getModuleNamesAttr();
+  for (auto [caseRef, moduleRef] :
+       llvm::zip(op.getCaseNamesAttr(), moduleNames.getValue().drop_front())) {
+    auto choiceCase = getChoiceCase(cast<SymbolRefAttr>(caseRef));
+    if (!choiceCase)
+      return op.emitOpError() << "could not find choice case " << caseRef;
+    auto *targetModule = getTargetModule(cast<FlatSymbolRefAttr>(moduleRef));
+    if (!targetModule)
+      return op.emitOpError()
+             << "could not find choice target module " << moduleRef;
+
+    casePatterns.push_back(
+        IntegerAttr::get(selectorParameter.getType(), choiceCase.getValue()));
+    caseNames.push_back(
+        builder.getStringAttr(("case_" + choiceCase.getSymName()).str()));
+    caseModules.push_back(targetModule);
+  }
+  casePatterns.push_back(builder.getUnitAttr());
+  caseNames.push_back(builder.getStringAttr("default"));
+  caseModules.push_back(defaultModule);
+
+  OperationState generateState(op.getLoc(), sv::GenerateOp::getOperationName());
+  generateState.addAttribute("sym_name",
+                             builder.getStringAttr(op.getInstanceName()));
+  generateState.addRegion();
+  auto generate = cast<sv::GenerateOp>(builder.create(generateState));
+  auto &generateBlock = generate.getBody().emplaceBlock();
+
+  builder.setInsertionPointToStart(&generateBlock);
+  OperationState caseState(op.getLoc(), sv::GenerateCaseOp::getOperationName());
+  caseState.addAttribute("cond", hwSelector);
+  caseState.addAttribute("casePatterns", builder.getArrayAttr(casePatterns));
+  caseState.addAttribute("caseNames", builder.getArrayAttr(caseNames));
+  for (size_t i = 0, e = caseModules.size(); i != e; ++i)
+    caseState.addRegion();
+  auto generateCase = cast<sv::GenerateCaseOp>(builder.create(caseState));
+
+  for (auto [region, targetModule, caseName] :
+       llvm::zip(generateCase.getCaseRegions(), caseModules, caseNames)) {
+    auto &block = region.emplaceBlock();
+    builder.setInsertionPointToStart(&block);
+    if (failed(createInstanceAndAssign(targetModule,
+                                       cast<StringAttr>(caseName).getValue())))
+      return failure();
+  }
+  return success();
 }
 
 LogicalResult FIRRTLLowering::visitDecl(ContractOp oldOp) {
