@@ -264,7 +264,8 @@ def ParamInstanceChoiceOp : HardwareDeclOp<"param_instance_choice", [
     `firrtl.instance` before hardware lowering.
   }];
 
-  let arguments = (ins ChoiceType:$selector,
+  let arguments = (ins Optional<ChoiceType>:$selector,
+                       OptionalAttr<ParamDeclAttr>:$selectorParameter,
                        FlatSymbolRefArrayAttr:$moduleNames,
                        SymbolRefArrayAttr:$caseNames,
                        StrAttr:$name, NameKindAttr:$nameKind,

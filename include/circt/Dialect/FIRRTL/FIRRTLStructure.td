@@ -143,6 +143,7 @@ def FModuleOp : FIRRTLModuleLike<"module", [SingleBlock, NoTerminator]> {
            ArrayRefAttr:$portSymbols,
            ArrayRefAttr:$portNames,
            ArrayRefAttr:$portTypes,
+           DefaultValuedAttr<ParamDeclArrayAttr, "{}">:$parameters,
            DefaultValuedAttr<AnnotationArrayAttr, "{}">:$annotations,
            DefaultValuedAttr<LayerArrayAttr, "{}">:$layers,
            DefaultValuedAttr<ArrayRefAttr, "{}">:$domainInfo

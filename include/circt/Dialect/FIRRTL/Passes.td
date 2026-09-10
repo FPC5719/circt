@@ -755,6 +755,17 @@ def LowerClasses : Pass<"firrtl-lower-classes", "firrtl::CircuitOp"> {
   let dependentDialects = ["om::OMDialect"];
 }
 
+def MaterializeChoiceParameters
+    : Pass<"firrtl-materialize-choice-parameters", "firrtl::CircuitOp"> {
+  let summary = "Materialize choice properties as module parameters";
+  let description = [{
+    Converts input `!firrtl.choice` ports and their `firrtl.propassign`
+    plumbing into formal FIRRTL parameter declarations and instance parameter
+    actuals. This must run before `firrtl-lower-classes`, which otherwise
+    treats choice properties as OM metadata.
+  }];
+}
+
 def LowerLayers : Pass<"firrtl-lower-layers", "firrtl::CircuitOp"> {
   let summary = "Lower layers and layer blocks to instances";
   let description = [{
