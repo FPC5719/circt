@@ -59,6 +59,7 @@ struct Emitter {
                        Block::BlockArgListType arguments = {});
   void emitModuleParameters(Operation *op, ArrayAttr parameters);
   void emitDeclaration(DomainOp op);
+  void emitDeclaration(ChoiceDomainOp op);
   void emitDeclaration(LayerOp op);
   void emitDeclaration(OptionOp op);
   void emitDeclaration(FormalOp op);
@@ -96,6 +97,7 @@ struct Emitter {
   void emitStatement(PropAssignOp op);
   void emitStatement(InstanceOp op);
   void emitStatement(InstanceChoiceOp op);
+  void emitStatement(ParamInstanceChoiceOp op);
   void emitStatement(AttachOp op);
   void emitStatement(MemOp op);
   void emitStatement(InvalidValueOp op);
@@ -140,6 +142,7 @@ struct Emitter {
   void emitExpression(ConstCastOp op);
   void emitExpression(StringConstantOp op);
   void emitExpression(FIntegerConstantOp op);
+  void emitExpression(ChoiceConstantOp op);
   void emitExpression(BoolConstantOp op);
   void emitExpression(DoubleConstantOp op);
   void emitExpression(ListCreateOp op);
@@ -465,7 +468,8 @@ void Emitter::emitCircuit(CircuitOp op) {
             emitModule(op);
             ps << PP::newline;
           })
-          .Case<DomainOp, LayerOp, OptionOp, FormalOp, SimulationOp>(
+          .Case<DomainOp, ChoiceDomainOp, LayerOp, OptionOp, FormalOp,
+                SimulationOp>(
               [&](auto op) { emitDeclaration(op); })
           .Default([&](auto op) {
             emitOpError(op, "not supported for emission inside circuit");
@@ -720,6 +724,26 @@ void Emitter::emitDeclaration(DomainOp op) {
   });
 }
 
+void Emitter::emitDeclaration(ChoiceDomainOp op) {
+  if (failed(requireVersion(missingSpecFIRVersion, op, "choice domains")))
+    return;
+  startStatement();
+  ps << "choice_domain " << PPExtString(legalize(op.getSymNameAttr()))
+     << " width ";
+  ps.addAsString(op.getWidth());
+  ps << " :";
+  emitLocationAndNewLine(op);
+  ps.scopedBox(PP::bbox2, [&]() {
+    for (auto caseOp : op.getBody().getOps<ChoiceCaseOp>()) {
+      ps << PP::newline << "choice_case "
+         << PPExtString(legalize(caseOp.getSymNameAttr())) << " = ";
+      ps.addAsString(caseOp.getValue());
+      emitLocation(caseOp);
+    }
+  });
+  ps << PP::newline << PP::newline;
+}
+
 /// Emit a layer definition.
 void Emitter::emitDeclaration(LayerOp op) {
   if (failed(requireVersion(FIRVersion(3, 3, 0), op, "layers")))
@@ -828,7 +852,8 @@ void Emitter::emitStatementsInBlock(Block &block) {
         .Case<WhenOp, WireOp, RegOp, RegResetOp, NodeOp, StopOp, SkipOp,
               PrintFOp, FPrintFOp, FFlushOp, AssertOp, AssumeOp, CoverOp,
               ConnectOp, MatchingConnectOp, PropertyAssertOp, PropAssignOp,
-              InstanceOp, InstanceChoiceOp, AttachOp, MemOp, InvalidValueOp,
+              InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp, AttachOp,
+              MemOp, InvalidValueOp,
               SeqMemOp, CombMemOp, MemoryPortOp, MemoryDebugPortOp,
               MemoryPortAccessOp, DomainDefineOp, RefDefineOp, RefForceOp,
               RefForceInitialOp, RefReleaseOp, RefReleaseInitialOp,
@@ -1286,6 +1311,44 @@ void Emitter::emitStatement(InstanceChoiceOp op) {
   }
 }
 
+void Emitter::emitStatement(ParamInstanceChoiceOp op) {
+  if (failed(requireVersion(missingSpecFIRVersion, op,
+                            "parameterized instance choices")))
+    return;
+  auto selector = op.getSelector();
+  if (!selector) {
+    emitOpError(op, "cannot emit a materialized parameterized instance choice");
+    return;
+  }
+
+  startStatement();
+  auto legalName = legalize(op.getNameAttr());
+  ps.scopedBox(PP::ibox2, [&] {
+    ps << "paraminstchoice " << PPExtString(legalName) << PP::space;
+    emitExpression(selector);
+    ps << " of "
+       << PPExtString(legalize(op.getDefaultTargetAttr().getAttr())) << " :";
+  });
+  emitLocation(op);
+  ps.scopedBox(PP::bbox2, [&] {
+    for (const auto &[caseSym, targetSym] : op.getTargetChoices()) {
+      ps << PP::newline
+         << PPExtString(legalize(caseSym.getLeafReference())) << " => "
+         << PPExtString(legalize(targetSym.getAttr()));
+    }
+  });
+  setPendingNewline();
+
+  SmallString<16> portName(legalName);
+  portName.push_back('.');
+  unsigned baseLen = portName.size();
+  for (unsigned i = 0, e = op.getNumResults(); i < e; ++i) {
+    portName.append(legalize(op.getPortNameAttr(i)));
+    addValueName(op.getResult(i), portName);
+    portName.resize(baseLen);
+  }
+}
+
 void Emitter::emitStatement(AttachOp op) {
   emitStatementFunctionOp(PPExtString("attach"), op);
 }
@@ -1582,7 +1645,8 @@ void Emitter::emitExpression(Value value) {
           // Miscellaneous
           BitsPrimOp, HeadPrimOp, TailPrimOp, PadPrimOp, MuxPrimOp, ShlPrimOp,
           ShrPrimOp, UninferredResetCastOp, ConstCastOp, StringConstantOp,
-          FIntegerConstantOp, BoolConstantOp, DoubleConstantOp, ListCreateOp,
+          FIntegerConstantOp, BoolConstantOp, DoubleConstantOp,
+          ChoiceConstantOp, ListCreateOp,
           UnresolvedPathOp, GenericIntrinsicOp, CatPrimOp, UnsafeDomainCastOp,
           UnknownValueOp, StringConcatOp, PropEqOp, BoolAndOp, BoolOrOp,
           BoolXorOp,
@@ -1748,6 +1812,19 @@ void Emitter::emitExpression(FIntegerConstantOp op) {
   ps << "Integer(";
   ps.addAsString(op.getValue());
   ps << ")";
+}
+
+void Emitter::emitExpression(ChoiceConstantOp op) {
+  if (failed(requireVersion(missingSpecFIRVersion, op, "choice expressions")))
+    return;
+  auto symbol = op.getCaseSymbol();
+  auto nested = symbol.getNestedReferences();
+  if (symbol.getRootReference().empty() || nested.size() != 1) {
+    emitOpError(op, "choice constant must reference a domain case");
+    return;
+  }
+  ps << "choice(" << PPExtString(symbol.getRootReference()) << ","
+     << PP::space << PPExtString(nested.front().getValue()) << ")";
 }
 
 void Emitter::emitExpression(BoolConstantOp op) {
@@ -1984,6 +2061,9 @@ void Emitter::emitType(Type type, bool includeConst) {
       })
       .Case<DomainType>([&](DomainType type) {
         ps << "Domain of " << PPExtString(type.getName().getValue());
+      })
+      .Case<ChoiceType>([&](ChoiceType type) {
+        ps << "Choice of " << PPExtString(type.getDomain().getValue());
       })
       .Default([&](auto type) {
         llvm_unreachable("all types should be implemented");

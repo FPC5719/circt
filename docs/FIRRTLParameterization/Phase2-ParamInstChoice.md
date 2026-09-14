@@ -18,10 +18,18 @@ Add a dedicated operation, tentatively:
 
 The selector is an explicit `ChoiceType` operand, not a synthetic hardware port. The operation should implement the same instance/instance-graph interfaces as `InstanceChoiceOp` where practical.
 
-For now, custom textual FIRRTL parser/printer syntax and external APIs are
-deliberately deferred.  The operation is available through generic MLIR syntax;
-the semantic verifier, instance-graph interface, literal canonicalization, and
-lowering diagnostic are the Phase 2 scope.
+The FIRRTL text form is:
+
+```firrtl
+paraminstchoice inner impl of InnerDefault :
+  ID1 => Inner_1
+  ID2 => Inner_2
+```
+
+The selector is a `Choice of` value; its domain qualifies the case names in
+the alternatives. The syntax is gated by `missingSpecFIRVersion` until it is
+accepted by the external FIRRTL specification. Public construction APIs remain
+deferred. The operation is otherwise available through generic MLIR syntax.
 
 ## Verifier requirements
 

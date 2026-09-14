@@ -90,6 +90,9 @@ struct SharedParserConstants {
   /// A map from identifiers to domain ops.
   llvm::DenseMap<StringRef, DomainOp> domainMap;
 
+  /// A map from choice-domain names to their declarations.
+  llvm::DenseMap<StringRef, ChoiceDomainOp> choiceDomainMap;
+
   /// An empty array attribute.
   const ArrayAttr emptyArrayAttr;
 
@@ -1079,6 +1082,23 @@ ParseResult FIRParser::parseType(FIRRTLType &result, const Twine &message) {
     break;
   }
 
+  case FIRToken::kw_Choice: {
+    if (requireFeature(missingSpecFIRVersion, "choice types"))
+      return failure();
+    consumeToken();
+    auto loc = getToken().getLoc();
+    StringRef domainName;
+    if (parseToken(FIRToken::kw_of, "expected 'of' after Choice type") ||
+        parseId(domainName, "expected choice domain name"))
+      return failure();
+    if (getConstants().choiceDomainMap.find(domainName) ==
+        getConstants().choiceDomainMap.end())
+      return emitError(loc) << "unknown choice domain '" << domainName << "'";
+    result = ChoiceType::get(
+        getContext(), FlatSymbolRefAttr::get(getContext(), domainName));
+    break;
+  }
+
   case FIRToken::kw_Probe:
   case FIRToken::kw_RWProbe: {
     auto kind = getToken().getKind();
@@ -2036,6 +2056,7 @@ private:
   parseIntegerLiteralExp(Value &result, bool isSigned,
                          std::optional<int32_t> allocatedWidth = {});
   ParseResult parseListExp(Value &result);
+  ParseResult parseChoiceExp(Value &result);
   ParseResult parseListConcatExp(Value &result);
   ParseResult parseCatExp(Value &result);
   ParseResult parseStringConcatExp(Value &result);
@@ -2145,6 +2166,7 @@ private:
   // Declarations
   ParseResult parseInstance();
   ParseResult parseInstanceChoice();
+  ParseResult parseParamInstanceChoice();
   ParseResult parseObject();
   ParseResult parseCombMem();
   ParseResult parseSeqMem();
@@ -2407,6 +2429,12 @@ ParseResult FIRStmtParser::parseExpImpl(Value &result, const Twine &message,
     if (isLeadingStmt)
       return emitError("unexpected List<>() as start of statement");
     if (parseListExp(result))
+      return failure();
+    break;
+
+  case FIRToken::lp_choice:
+    if (requireFeature(missingSpecFIRVersion, "choice expressions") ||
+        parseChoiceExp(result))
       return failure();
     break;
   }
@@ -2768,6 +2796,34 @@ FIRStmtParser::parseIntegerLiteralExp(Value &result, bool isSigned,
 }
 
 /// list-exp ::= list-type '(' exp* ')'
+ParseResult FIRStmtParser::parseChoiceExp(Value &result) {
+  consumeToken(FIRToken::lp_choice);
+  StringRef domainName, caseName;
+  auto loc = getToken().getLoc();
+  if (parseId(domainName, "expected choice domain name") ||
+      parseToken(FIRToken::comma, "expected ',' after choice domain") ||
+      parseId(caseName, "expected choice case name") ||
+      parseToken(FIRToken::r_paren, "expected ')' after choice case"))
+    return failure();
+
+  auto domainIt = getConstants().choiceDomainMap.find(domainName);
+  if (domainIt == getConstants().choiceDomainMap.end())
+    return emitError(loc) << "unknown choice domain '" << domainName << "'";
+  auto caseOp = domainIt->second.lookupSymbol<ChoiceCaseOp>(caseName);
+  if (!caseOp)
+    return emitError(loc) << "unknown choice case '" << caseName
+                          << "' in domain '" << domainName << "'";
+
+  auto symbol = SymbolRefAttr::get(
+      getContext(), domainName,
+      {FlatSymbolRefAttr::get(getContext(), caseName)});
+  auto type = ChoiceType::get(getContext(),
+                              FlatSymbolRefAttr::get(getContext(), domainName));
+  locationProcessor.setLoc(loc);
+  result = ChoiceConstantOp::create(builder, type, symbol).getResult();
+  return success();
+}
+
 ParseResult FIRStmtParser::parseListExp(Value &result) {
   auto loc = getToken().getLoc();
   bool hasLAngle = getToken().is(FIRToken::langle_List);
@@ -3212,6 +3268,8 @@ ParseResult FIRStmtParser::parseSimpleStmtImpl(unsigned stmtIndent) {
     return parseInstance();
   case FIRToken::kw_instchoice:
     return parseInstanceChoice();
+  case FIRToken::kw_paraminstchoice:
+    return parseParamInstanceChoice();
   case FIRToken::kw_object:
     return parseObject();
   case FIRToken::kw_cmem:
@@ -4995,6 +5053,102 @@ ParseResult FIRStmtParser::parseInstanceChoice() {
   return moduleContext.addSymbolEntry(id, entryId, startTok.getLoc());
 }
 
+/// paraminstchoice ::= 'paraminstchoice' id exp 'of' id ':' info?
+///                       newline indent (id '=>' id)+ dedent
+ParseResult FIRStmtParser::parseParamInstanceChoice() {
+  auto startTok = consumeToken(FIRToken::kw_paraminstchoice);
+  auto loc = startTok.getLoc();
+  if (requireFeature(missingSpecFIRVersion, "parameterized instance choices"))
+    return failure();
+
+  StringRef id, defaultModuleName;
+  Value selector;
+  if (parseId(id, "expected instance name") ||
+      parseExp(selector, "expected choice selector") ||
+      parseToken(FIRToken::kw_of, "expected 'of' in parameterized instance") ||
+      parseId(defaultModuleName, "expected default module name") ||
+      parseToken(FIRToken::colon, "expected ':' after parameterized instance") ||
+      parseOptionalInfo())
+    return failure();
+
+  auto selectorType = dyn_cast<ChoiceType>(selector.getType());
+  if (!selectorType)
+    return emitError(loc, "parameterized instance selector must have choice "
+                          "type"),
+           failure();
+
+  locationProcessor.setLoc(loc);
+  auto defaultModule = getReferencedModule(loc, defaultModuleName);
+  if (!defaultModule)
+    return failure();
+
+  auto domainName = selectorType.getDomain().getValue();
+  auto domain = circuitSymTbl.lookup<ChoiceDomainOp>(domainName);
+  if (!domain)
+    return emitError(loc) << "use of undefined choice domain '" << domainName
+                          << "'";
+
+  SmallVector<Attribute> moduleNames;
+  SmallVector<Attribute> caseNames;
+  moduleNames.push_back(
+      FlatSymbolRefAttr::get(getContext(), defaultModuleName));
+
+  auto baseIndent = getIndentation();
+  if (!baseIndent)
+    return emitError(loc, "parameterized instance requires at least one "
+                          "choice alternative"),
+           failure();
+  while (getIndentation() == baseIndent) {
+    StringRef caseName, moduleName;
+    if (parseId(caseName, "expected choice case name") ||
+        parseToken(FIRToken::equal_greater,
+                   "expected '=>' in parameterized instance definition") ||
+        parseId(moduleName, "expected module name"))
+      return failure();
+
+    if (!domain.lookupSymbol<ChoiceCaseOp>(caseName))
+      return emitError(loc) << "use of undefined choice case '" << caseName
+                            << "' in domain '" << domainName << "'";
+    if (!getReferencedModule(loc, moduleName))
+      return failure();
+
+    moduleNames.push_back(FlatSymbolRefAttr::get(getContext(), moduleName));
+    caseNames.push_back(SymbolRefAttr::get(
+        getContext(), domainName,
+        {FlatSymbolRefAttr::get(getContext(), caseName)}));
+  }
+
+  SmallVector<Type> resultTypes;
+  llvm::transform(
+      defaultModule.getPortTypes(), std::back_inserter(resultTypes),
+      [](Attribute type) { return cast<TypeAttr>(type).getValue(); });
+  auto emptyArray = getConstants().emptyArrayAttr;
+  auto portAnnotations = builder.getArrayAttr(
+      SmallVector<Attribute>(resultTypes.size(), emptyArray));
+  auto domainInfo = defaultModule.getDomainInfoAttr();
+  if (domainInfo.empty())
+    domainInfo = builder.getArrayAttr(
+        SmallVector<Attribute>(resultTypes.size(), emptyArray));
+
+  auto result = ParamInstanceChoiceOp::create(
+      builder, resultTypes, selector, /*selectorParameter=*/{},
+      builder.getArrayAttr(moduleNames), builder.getArrayAttr(caseNames),
+      builder.getStringAttr(id),
+      NameKindEnumAttr::get(getContext(), NameKindEnum::InterestingName),
+      defaultModule.getPortDirectionsAttr(), defaultModule.getPortNamesAttr(),
+      domainInfo, emptyArray, portAnnotations, defaultModule.getLayersAttr(),
+      /*inner_sym=*/{});
+
+  UnbundledValueEntry unbundledValueEntry;
+  unbundledValueEntry.reserve(result.getNumResults());
+  for (auto [name, value] : llvm::zip(defaultModule.getPortNames(),
+                                      result.getResults()))
+    unbundledValueEntry.push_back({cast<StringAttr>(name), value});
+  moduleContext.unbundledValues.push_back(std::move(unbundledValueEntry));
+  auto entryId = UnbundledID(moduleContext.unbundledValues.size());
+  return moduleContext.addSymbolEntry(id, entryId, loc);
+}
+
 FModuleLike FIRStmtParser::getReferencedModule(SMLoc loc,
                                                StringRef moduleName) {
   auto referencedModule = circuitSymTbl.lookup<FModuleLike>(moduleName);
@@ -5622,6 +5776,7 @@ private:
 
   ParseResult parseClass(CircuitOp circuit, unsigned indent);
   ParseResult parseDomain(CircuitOp circuit, unsigned indent);
+  ParseResult parseChoiceDomain(CircuitOp circuit, unsigned indent);
   ParseResult parseExtClass(CircuitOp circuit, unsigned indent);
   ParseResult parseExtModule(CircuitOp circuit, unsigned indent);
   ParseResult parseIntModule(CircuitOp circuit, unsigned indent);
@@ -5952,6 +6107,7 @@ ParseResult FIRCircuitParser::skipToModuleEnd(unsigned indent) {
 
     // If we got to the next top-level declaration, then we're done.
     case FIRToken::kw_class:
+    case FIRToken::kw_choice_domain:
     case FIRToken::kw_domain:
     case FIRToken::kw_declgroup:
     case FIRToken::kw_extclass:
@@ -6074,6 +6230,67 @@ ParseResult FIRCircuitParser::parseDomain(CircuitOp circuit, unsigned indent) {
   // types.
   getConstants().domainMap[name.getValue()] = domainOp;
 
+  return success();
+}
+
+/// choice_domain ::= 'choice_domain' id 'width' int ':' info?
+///                    INDENT ('choice_case' id '=' int) + DEDENT
+ParseResult FIRCircuitParser::parseChoiceDomain(CircuitOp circuit,
+                                                unsigned indent) {
+  auto start = consumeToken(FIRToken::kw_choice_domain);
+  StringAttr name;
+  LocWithInfo info(getToken().getLoc(), this);
+  int32_t width;
+  StringRef widthKeyword;
+  if (parseId(name, "expected choice domain name") ||
+      parseId(widthKeyword, "expected 'width' in choice domain"))
+    return failure();
+  if (widthKeyword != "width")
+    return emitError("expected 'width' in choice domain"), failure();
+  if (parseIntLit(width, "expected choice domain width") ||
+      parseToken(FIRToken::colon, "expected ':' after choice domain") ||
+      info.parseOptionalInfo())
+    return failure();
+  if (width < 1 || width > 64)
+    return emitError("choice domain width must be between 1 and 64"), failure();
+
+  auto builder = circuit.getBodyBuilder();
+  auto domain = ChoiceDomainOp::create(builder, info.getLoc(), name,
+                                       static_cast<unsigned>(width));
+  auto *block = new Block;
+  domain.getBody().push_back(block);
+  builder.setInsertionPointToEnd(block);
+
+  auto baseIndent = getIndentation();
+  if (!baseIndent)
+    return emitError(start.getLoc(), "choice domain must contain cases"),
+           failure();
+  StringSet<> cases;
+  while (getIndentation() == baseIndent) {
+    auto caseLoc = getToken().getLoc();
+    if (parseToken(FIRToken::kw_choice_case, "expected 'choice_case'"))
+      return failure();
+    StringAttr caseName;
+    uint64_t value;
+    LocWithInfo caseInfo(caseLoc, this);
+    if (parseId(caseName, "expected choice case name") ||
+        parseToken(FIRToken::equal, "expected '=' after choice case name"))
+      return failure();
+    APInt parsedValue;
+    if (parseIntLit(parsedValue, "expected choice case encoding") ||
+        parsedValue.isNegative() || parsedValue.getActiveBits() > 64)
+      return emitError("choice case encoding must be an unsigned 64-bit integer"),
+             failure();
+    value = parsedValue.getZExtValue();
+    if (!cases.insert(caseName.getValue()).second)
+      return emitError("duplicate choice case definition '" +
+                       caseName.getValue() + "'"),
+             failure();
+    if (caseInfo.parseOptionalInfo())
+      return failure();
+    ChoiceCaseOp::create(builder, caseInfo.getLoc(), caseName, value);
+  }
+  getConstants().choiceDomainMap[name.getValue()] = domain;
   return success();
 }
 
@@ -6349,6 +6566,10 @@ ParseResult FIRCircuitParser::parseToplevelDefinition(CircuitOp circuit,
     if (requireFeature(missingSpecFIRVersion, "domains"))
       return failure();
     return parseDomain(circuit, indent);
+  case FIRToken::kw_choice_domain:
+    if (requireFeature(missingSpecFIRVersion, "choice domains"))
+      return failure();
+    return parseChoiceDomain(circuit, indent);
   case FIRToken::kw_extclass:
     return parseExtClass(circuit, indent);
   case FIRToken::kw_extmodule:
@@ -6711,6 +6932,7 @@ ParseResult FIRCircuitParser::parseCircuit(
       return failure();
 
     case FIRToken::kw_class:
+    case FIRToken::kw_choice_domain:
     case FIRToken::kw_declgroup:
     case FIRToken::kw_domain:
     case FIRToken::kw_extclass:
