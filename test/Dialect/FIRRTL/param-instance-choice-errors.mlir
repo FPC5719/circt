@@ -69,3 +69,20 @@ firrtl.circuit "RuntimeSelector" {
     }> : (!firrtl.choice<@Impl>) -> !firrtl.uint<1>
   }
 }
+
+// -----
+
+firrtl.circuit "IntModuleTarget" {
+  firrtl.choice_domain @Impl width 1 { firrtl.choice_case @A = 0 }
+  firrtl.intmodule @IntDefault(out out: !firrtl.uint<1>) attributes {intrinsic = "test.int"}
+  firrtl.module @InternalAlternative(out %out: !firrtl.uint<1>) {}
+  firrtl.module @IntModuleTarget(in %impl: !firrtl.choice<@Impl>) {
+    // expected-error @+1 {{intmodule must be instantiated with instance op, not via 'firrtl.param_instance_choice'}}
+    %result = "firrtl.param_instance_choice"(%impl) <{
+      moduleNames = [@IntDefault, @InternalAlternative], caseNames = [@Impl::@A],
+      name = "inner", nameKind = #firrtl<name_kind droppable_name>,
+      portDirections = array<i1: true>, portNames = ["out"],
+      domainInfo = [[]], annotations = [], portAnnotations = [[]], layers = []
+    }> : (!firrtl.choice<@Impl>) -> !firrtl.uint<1>
+  }
+}

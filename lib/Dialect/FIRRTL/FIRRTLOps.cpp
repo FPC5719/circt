@@ -3497,10 +3497,10 @@ ParamInstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
       return failure();
     auto module =
         symbolTable.lookupNearestSymbolFrom<FModuleLike>(*this, moduleRef);
-    if (!isa<FModuleOp>(module))
-      return emitOpError() << "parameterized instances require an internal "
-                           << "module target, but " << moduleRef
-                           << " is not an internal module";
+    if (!isa<FModuleOp, FExtModuleOp>(module))
+      return emitOpError()
+             << "parameterized instances support only internal or "
+             << "external module target, but " << moduleRef << " is neither";
     for (auto type : module.getPortTypes())
       if (type_isa<RefType>(cast<TypeAttr>(type).getValue()))
         return emitOpError() << "parameterized instances do not support "
