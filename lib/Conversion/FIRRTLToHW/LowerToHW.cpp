@@ -4359,6 +4359,12 @@ LogicalResult FIRRTLLowering::visitDecl(ParamInstanceChoiceOp op) {
     return node ? node->getModule() : nullptr;
   };
 
+  auto getTargetParameters = [&](Operation *targetModule) -> ArrayAttr {
+    if (auto extModule = dyn_cast<FExtModuleOp>(targetModule))
+      return getHWParameters(extModule, /*ignoreValues=*/false);
+    return {};
+  };
+
   auto defaultTarget = op.getDefaultTargetAttr();
   auto *defaultModule = getTargetModule(defaultTarget);
   if (!defaultModule)
@@ -4415,7 +4421,7 @@ LogicalResult FIRRTLLowering::visitDecl(ParamInstanceChoiceOp op) {
 
     auto instance = hw::InstanceOp::create(
         builder, newModule, op.getNameAttr(), inputOperands,
-        builder.getArrayAttr({}), /*innerSym=*/{});
+        getTargetParameters(targetModule), /*innerSym=*/{});
     for (auto [wire, result] : llvm::zip(outputWires, instance.getResults()))
       sv::AssignOp::create(builder, wire, result);
     return success();
@@ -4432,7 +4438,7 @@ LogicalResult FIRRTLLowering::visitDecl(ParamInstanceChoiceOp op) {
     instanceName += suffix;
     auto instance = hw::InstanceOp::create(
         builder, newModule, builder.getStringAttr(instanceName), inputOperands,
-        builder.getArrayAttr({}), /*innerSym=*/{});
+        getTargetParameters(targetModule), /*innerSym=*/{});
     for (auto [wire, result] : llvm::zip(outputWires, instance.getResults()))
       sv::AssignOp::create(builder, wire, result);
     return success();

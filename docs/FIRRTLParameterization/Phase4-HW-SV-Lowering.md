@@ -24,6 +24,10 @@ Lower an unresolved choice to:
 4. assignments from each candidate’s outputs to the shared wires;
 5. the existing FIRRTL result mapping to the shared wires.
 
+When a candidate is an external module, attach its declared parameter values to
+the branch `hw.instance`, matching ordinary instance and instance-choice
+lowering.
+
 If the selector is a literal, replace the operation with one ordinary `hw.instance` and do not emit a generate block.
 
 The output must resemble:
@@ -56,6 +60,8 @@ Add conversion tests for:
 - `sv.generate.case` with two and several alternatives;
 - default case behavior;
 - identical-interface verification;
+- internal, external, and mixed internal/external candidates, including
+  parameterized and parameterless external modules;
 - literal specialization;
 - emitted Verilog containing one shared parent module and per-instance `#(...)` actuals.
 

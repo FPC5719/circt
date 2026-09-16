@@ -36,17 +36,17 @@ deferred. The operation is otherwise available through generic MLIR syntax.
 - Selector domain matches the case domain.
 - Every case references a valid case and module.
 - Candidate modules have identical port names, directions, types, domains, and layer requirements.
-- Candidate modules are legal internal targets for V1.
+- Candidate modules are legal internal or external targets for V1.
 - Default or exhaustive selection is present.
 - The selector is elaboration-only and cannot be produced by hardware operations.
 - Unsupported inner symbols, probes, and path-sensitive annotations are rejected initially.
 
 The current implementation uses generic MLIR assembly.  It rejects inner
-symbols, non-empty operation/port annotations, probe ports, external/class
+symbols, non-empty operation/port annotations, probe ports, intrinsic/class
 targets, missing or duplicate choice cases, and mismatched selector domains.
 Literal `firrtl.choice.constant` selectors canonicalize directly to
 `firrtl.instance`; forwarded or otherwise unresolved choice values remain in
-the parameterized operation and produce a deliberate hardware-lowering error.
+the parameterized operation and lower to `sv.generate.case`.
 
 ## Canonicalization choice
 
@@ -65,6 +65,8 @@ Add tests for:
 - selector-domain mismatch;
 - duplicate/missing cases;
 - candidate port mismatch;
+- internal, external, and mixed internal/external targets, including
+  parameterized external modules;
 - illegal runtime selector and unsupported symbol/path cases.
 
 Run FIRRTL verifier, parser, and instance-graph tests after each IR change. Add `FileCheck` assertions that ordinary `firrtl.instance_choice` remains unchanged.
