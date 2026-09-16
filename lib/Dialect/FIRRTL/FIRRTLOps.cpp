@@ -3475,6 +3475,9 @@ ParamInstanceChoiceOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
       return failure();
     auto module =
         symbolTable.lookupNearestSymbolFrom<FModuleLike>(*this, moduleRef);
+    if (isa<FIntModuleOp>(module))
+      return emitOpError("intmodule must be instantiated with instance op, "
+                         "not via 'firrtl.param_instance_choice'");
     if (!isa<FModuleOp, FExtModuleOp>(module))
       return emitOpError()
              << "parameterized instances support only internal or "

@@ -433,6 +433,7 @@ struct TypeLoweringVisitor : public FIRRTLVisitor<TypeLoweringVisitor, bool> {
   bool visitDecl(FModuleOp op);
   bool visitDecl(InstanceOp op);
   bool visitDecl(InstanceChoiceOp op);
+  bool visitDecl(ParamInstanceChoiceOp op);
   bool visitDecl(MemOp op);
   bool visitDecl(NodeOp op);
   bool visitDecl(RegOp op);
@@ -1703,6 +1704,29 @@ bool TypeLoweringVisitor::visitDecl(InstanceChoiceOp op) {
         direction::packAttribute(context, newDirs), newNames, newDomains,
         op.getAnnotations(), newPortAnno, op.getLayersAttr(), sym,
         op.getInstanceMacroAttr());
+  };
+
+  return lowerInstanceLike(op, mode, op.getPortAnnotations(),
+                           createNewInstance);
+}
+
+bool TypeLoweringVisitor::visitDecl(ParamInstanceChoiceOp op) {
+  // Get the default target module to determine preservation mode.
+  auto *moduleOp =
+      symTbl.lookupNearestSymbolFrom(op, op.getDefaultTargetAttr());
+  auto mode = getPreservationModeForPorts(cast<FModuleLike>(moduleOp));
+
+  // Lambda to create the new ParamInstanceChoiceOp with lowered types.
+  auto createNewInstance = [&](ArrayRef<Type> resultTypes,
+                               ArrayRef<Direction> newDirs, ArrayAttr newNames,
+                               ArrayAttr newDomains, ArrayAttr newPortAnno,
+                               hw::InnerSymAttr sym) -> Operation * {
+    return ParamInstanceChoiceOp::create(
+        *builder, op.getLoc(), resultTypes, op.getSelector(),
+        op.getSelectorParameterAttr(), op.getModuleNamesAttr(),
+        op.getCaseNamesAttr(), op.getNameAttr(), op.getNameKindAttr(),
+        direction::packAttribute(context, newDirs), newNames, newDomains,
+        op.getAnnotationsAttr(), newPortAnno, op.getLayersAttr(), sym);
   };
 
   return lowerInstanceLike(op, mode, op.getPortAnnotations(),

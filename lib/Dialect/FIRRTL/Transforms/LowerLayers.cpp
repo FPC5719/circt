@@ -471,15 +471,17 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
     // creating an intermediary node to dereference if the driver cannot support
     // an inner symbol. This avoids creating intermediary nodes unless
     // absolutely required while also avoiding dead code.
-    if (isa_and_present<InstanceOp, InstanceChoiceOp>(definingOp)) {
+    if (isa_and_present<FInstanceLike>(definingOp)) {
       bool isInstanceInputPort =
           TypeSwitch<Operation *, bool>(definingOp)
-              .Case<InstanceOp, InstanceChoiceOp>([&](auto instOp) {
-                for (auto [idx, result] : llvm::enumerate(instOp.getResults()))
-                  if (result == value)
-                    return instOp.getPortDirection(idx) == Direction::In;
-                return false;
-              })
+              .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp>(
+                  [&](auto instOp) {
+                    for (auto [idx, result] :
+                         llvm::enumerate(instOp.getResults()))
+                      if (result == value)
+                        return instOp.getPortDirection(idx) == Direction::In;
+                    return false;
+                  })
               .Default(false);
 
       if (isInstanceInputPort) {
@@ -683,9 +685,12 @@ LogicalResult LowerLayersPass::runOnModuleBody(FModuleOp moduleOp,
     for (auto result : op->getResults())
       removeLayersFromValue(result);
 
-    // If the op is an instance, clear the enablelayers attribute.
-    if (auto instance = dyn_cast<InstanceOp>(op))
-      instance.setLayers({});
+    // If the op is an instance, clear the enablelayers attribute.  All
+    // instance-like operations must agree with the (now layer-free) modules
+    // they instantiate.
+    TypeSwitch<Operation *>(op)
+        .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp>(
+            [&](auto instance) { instance.setLayers({}); });
 
     auto layerBlock = dyn_cast<LayerBlockOp>(op);
     if (!layerBlock)

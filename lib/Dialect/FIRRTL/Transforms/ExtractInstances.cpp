@@ -329,6 +329,23 @@ void ExtractInstancesPass::collectAnnos() {
     });
   }
 
+  // Extraction only moves the plain instances of an annotated module.  A
+  // parameterized instance choice cannot be extracted -- its instances must
+  // survive until the choice parameters are materialized -- so diagnose instead
+  // of silently dropping the extraction annotation.
+  for (auto module : circuit.getOps<FModuleLike>()) {
+    if (!annotatedModules.contains(module))
+      continue;
+    for (auto *instRecord : instanceGraph->lookup(module)->uses())
+      if (auto choice =
+              dyn_cast<ParamInstanceChoiceOp>(*instRecord->getInstance())) {
+        choice.emitError()
+            << "cannot extract a parameterized instance choice of module '"
+            << module.getModuleName() << "'";
+        anyFailures = true;
+      }
+  }
+
   // Gather the annotations on instances to be extracted.
   circuit.walk([&](InstanceOp inst) {
     SmallVector<Annotation, 1> instAnnos;

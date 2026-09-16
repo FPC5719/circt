@@ -223,6 +223,19 @@ static InstanceOp getInlinableInstance(Operation *op) {
   return dyn_cast_or_null<InstanceOp>(op);
 }
 
+/// Whether the module has elaboration-time choice parameters.
+///
+/// A choice is a property value which may only be sourced by a choice constant
+/// or by the corresponding input of the containing module.  Inlining the module
+/// would have to forward the choice through a property wire, which the choice
+/// contract does not allow.  Such modules are therefore kept instantiated until
+/// the choice parameters are materialized.
+static bool moduleHasChoicePorts(FModuleLike module) {
+  return llvm::any_of(module.getPortTypes(), [](Attribute type) {
+    return type_isa<ChoiceType>(cast<TypeAttr>(type).getValue());
+  });
+}
+
 /// Module facts regarding inlining.
 struct ModuleInfo {
   /// The module carries an inline annotation.
@@ -230,6 +243,9 @@ struct ModuleInfo {
 
   /// The module carries a flatten annotation.
   bool hasFlatten : 1;
+
+  /// The module has elaboration-time choice parameters and cannot be inlined.
+  bool hasChoicePorts : 1;
 
   /// Does /any/ instantiation path flatten this module?
   bool underFlatten : 1;
@@ -256,8 +272,8 @@ struct ModuleInfo {
 
   // (No default member initialization of bitfield members until C++20)
   ModuleInfo()
-      : hasInline(false), hasFlatten(false), underFlatten(false),
-        hasUnflattenedPath(false), isLive(false) {}
+      : hasInline(false), hasFlatten(false), hasChoicePorts(false),
+        underFlatten(false), hasUnflattenedPath(false), isLive(false) {}
 };
 
 class InliningFacts {
@@ -303,6 +319,9 @@ public:
   bool hasInline(FModuleLike mod) const { return getModuleInfo(mod).hasInline; }
   bool hasFlatten(FModuleLike mod) const {
     return getModuleInfo(mod).hasFlatten;
+  }
+  bool hasChoicePorts(FModuleLike mod) const {
+    return getModuleInfo(mod).hasChoicePorts;
   }
 
   // Convenience helper to project out `isLive` if operation is known, or false.
@@ -402,7 +421,12 @@ InliningFacts::compute(CircuitOp circuit, InstanceGraph &instanceGraph,
       });
       bool hasOpaqueUse = opaqueRecIt != instantiators.end();
 
-      if (!module.canDiscardOnUseEmpty() || hasOpaqueUse) {
+      // Modules with elaboration-time choice parameters cannot be inlined and
+      // are instantiated like a module with an opaque use.
+      info.hasChoicePorts = moduleHasChoicePorts(module);
+
+      if (!module.canDiscardOnUseEmpty() || hasOpaqueUse ||
+          info.hasChoicePorts) {
         info.isLive = true;
         info.hasUnflattenedPath = true;
       }
@@ -414,6 +438,10 @@ InliningFacts::compute(CircuitOp circuit, InstanceGraph &instanceGraph,
         diag.attachNote((*opaqueRecIt)->getInstance()->getLoc())
             << "instantiated here";
       }
+      if (info.hasInline && info.hasChoicePorts)
+        mlir::emitWarning(module.getLoc())
+            << "module marked inline has elaboration-time choice parameters "
+               "and is retained until they are materialized";
       continue;
     }
 
@@ -1983,6 +2011,21 @@ LogicalResult Inliner::processInto(StringRef prefix, InliningLevel &il,
 
     // Flatten inlines every child; otherwise only those marked for it.
     // A child the pass keeps is cloned as a live instance.
+    // Modules with elaboration-time choice parameters are never inlined: their
+    // choice property ports have no representation in the parent module.
+    if (inliningFacts.hasChoicePorts(childModule)) {
+      if (flatten) {
+        instance->emitError("cannot flatten instance")
+                .attachNote(childModule.getLoc())
+            << "module has elaboration-time choice parameters";
+        return failure();
+      }
+      assert(inliningFacts.isLive(childModule) &&
+             "a kept child module must be live");
+      cloneAndRename(prefix, il, mapper, *op);
+      return success();
+    }
+
     if (!flatten && !shouldInline(childModule)) {
       assert(inliningFacts.isLive(childModule) &&
              "a kept child module must be live");
@@ -2034,6 +2077,18 @@ LogicalResult Inliner::processInstances(FModuleOp module, bool flatten) {
     }
 
     // Flatten inlines every child; otherwise only those marked for it.
+    // Modules with elaboration-time choice parameters are never inlined: their
+    // choice property ports have no representation in the parent module.
+    if (inliningFacts.hasChoicePorts(target)) {
+      if (flatten) {
+        instance->emitError("cannot flatten instance")
+                .attachNote(target.getLoc())
+            << "module has elaboration-time choice parameters";
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+
     if (!flatten && !shouldInline(target))
       return WalkResult::advance();
 
