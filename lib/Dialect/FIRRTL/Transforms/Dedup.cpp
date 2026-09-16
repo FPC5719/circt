@@ -1131,6 +1131,21 @@ private:
         instanceChoiceOp.setModuleNamesAttr(
             ArrayAttr::get(context, newModules));
         instanceChoiceOp.setPortNamesAttr(toModule.getPortNamesAttr());
+      } else if (auto paramInstanceChoiceOp =
+                     dyn_cast<ParamInstanceChoiceOp>(*inst)) {
+        auto fromModuleName = fromNode->getModule().getModuleNameAttr();
+        SmallVector<Attribute> newModules;
+        for (auto module :
+             paramInstanceChoiceOp.getReferencedModuleNamesAttr()) {
+          auto moduleName = cast<StringAttr>(module);
+          if (moduleName == fromModuleName)
+            newModules.push_back(toModuleRef);
+          else
+            newModules.push_back(FlatSymbolRefAttr::get(moduleName));
+        }
+        paramInstanceChoiceOp.setModuleNamesAttr(
+            ArrayAttr::get(context, newModules));
+        paramInstanceChoiceOp.setPortNamesAttr(toModule.getPortNamesAttr());
       }
       oldInstRec->getParent()->addInstance(inst, toNode);
       oldInstRec->erase();
