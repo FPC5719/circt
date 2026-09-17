@@ -73,3 +73,29 @@ circuit ParamInstChoiceBadSelector :
     ; expected-error @below {{parameterized instance selector must have choice type}}
     paraminstchoice selected selector of ParamInstChoiceBadSelector :
       A => ParamInstChoiceBadSelector
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit ParamInstChoiceDuplicateCase :
+  choice_domain Impl width 1 :
+    choice_case A = 0
+  module ParamInstChoiceDuplicateCaseTarget :
+  public module ParamInstChoiceDuplicateCase :
+    input impl : Choice of Impl
+    ; expected-error @below {{duplicate choice case @Impl::@A}}
+    paraminstchoice selected impl of ParamInstChoiceDuplicateCaseTarget :
+      A => ParamInstChoiceDuplicateCaseTarget
+      A => ParamInstChoiceDuplicateCaseTarget
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit ParamInstChoiceUndefinedModule :
+  choice_domain Impl width 1 :
+    choice_case A = 0
+  public module ParamInstChoiceUndefinedModule :
+    input impl : Choice of Impl
+    ; expected-error @below {{use of undefined module name 'Missing' in instance}}
+    paraminstchoice selected impl of ParamInstChoiceUndefinedModule :
+      A => Missing

@@ -32,17 +32,13 @@ struct ChoiceParameter {
 
 static FailureOr<IntegerAttr> getChoiceValue(ChoiceConstantOp constant,
                                              SymbolTableCollection &symbols) {
-  auto caseRef = constant.getCaseSymbol();
-  auto domain = symbols.lookupNearestSymbolFrom<ChoiceDomainOp>(
-      constant, FlatSymbolRefAttr::get(caseRef.getRootReference()));
-  if (!domain)
-    return failure();
-  auto choiceCase =
-      symbols.lookupNearestSymbolFrom<ChoiceCaseOp>(constant, caseRef);
+  auto choiceCase = constant.getChoiceCase(symbols);
   if (!choiceCase)
     return failure();
-  auto type = IntegerType::get(constant.getContext(), domain.getWidth());
-  return IntegerAttr::get(type, choiceCase.getValue());
+  auto domain = choiceCase->getParentOfType<ChoiceDomainOp>();
+  if (!domain)
+    return failure();
+  return IntegerAttr::get(domain.getEncodingType(), choiceCase.getValue());
 }
 
 static PropAssignOp getUniquePropertyAssignment(FIRRTLPropertyValue value) {
@@ -113,7 +109,7 @@ void MaterializeChoiceParametersPass::runOnOperation() {
         fail(module, "choice parameter references an unknown choice domain");
         return;
       }
-      auto integerType = IntegerType::get(&getContext(), domain.getWidth());
+      auto integerType = domain.getEncodingType();
       auto name = module.getPortNameAttr(index);
       parameters.push_back(ParamDeclAttr::get(name, integerType));
       moduleParameters[module].push_back(
@@ -173,7 +169,7 @@ void MaterializeChoiceParametersPass::runOnOperation() {
       auto domain = selector.getType().getDomain();
       auto domainOp =
           symbols.lookupNearestSymbolFrom<ChoiceDomainOp>(choice, domain);
-      auto integerType = IntegerType::get(&getContext(), domainOp.getWidth());
+      auto integerType = domainOp.getEncodingType();
       choice->setOperands({});
       choice.setSelectorParameterAttr(ParamDeclAttr::get(
           &getContext(), StringAttr::get(&getContext(), "selector"),

@@ -1270,6 +1270,18 @@ def ChoiceConstantOp : FIRRTLOp<"choice.constant", [
   let arguments = (ins SymbolRefAttr:$caseSymbol);
   let results = (outs ChoiceType:$result);
   let assemblyFormat = "$caseSymbol attr-dict `:` type($result)";
+
+  let builders = [
+    OpBuilder<(ins "ChoiceCaseOp":$choiceCase)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// Look up the choice case referenced by this constant.
+    ChoiceCaseOp getChoiceCase(mlir::SymbolTableCollection &symbolTable) {
+      return symbolTable.lookupNearestSymbolFrom<ChoiceCaseOp>(
+          *this, getCaseSymbol());
+    }
+  }];
 }
 
 def FIntegerConstantOp : FIRRTLOp<"integer", [Pure, ConstantLike]> {

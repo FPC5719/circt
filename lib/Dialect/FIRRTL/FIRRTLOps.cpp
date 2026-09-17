@@ -2246,6 +2246,40 @@ LogicalResult ClassOp::verify() {
 // ChoiceDomainOp and ChoiceConstantOp
 //===----------------------------------------------------------------------===//
 
+void ChoiceDomainOp::build(OpBuilder &builder, OperationState &result,
+                           StringAttr symName, uint32_t width,
+                           ArrayRef<std::pair<StringAttr, uint64_t>> cases) {
+  result.getOrAddProperties<Properties>().sym_name = symName;
+  result.getOrAddProperties<Properties>().width =
+      builder.getUI32IntegerAttr(width);
+  auto *body = result.addRegion();
+  OpBuilder::InsertionGuard guard(builder);
+  builder.createBlock(body);
+  for (auto [caseName, value] : cases)
+    ChoiceCaseOp::create(builder, result.location, caseName, value);
+}
+
+void ChoiceDomainOp::build(OpBuilder &builder, OperationState &result,
+                           StringRef symName, uint32_t width,
+                           ArrayRef<std::pair<StringRef, uint64_t>> cases) {
+  SmallVector<std::pair<StringAttr, uint64_t>> caseAttrs;
+  caseAttrs.reserve(cases.size());
+  for (auto [caseName, value] : cases)
+    caseAttrs.emplace_back(builder.getStringAttr(caseName), value);
+  build(builder, result, builder.getStringAttr(symName), width, caseAttrs);
+}
+
+void ChoiceConstantOp::build(OpBuilder &builder, OperationState &result,
+                             ChoiceCaseOp choiceCase) {
+  auto domain = choiceCase->getParentOfType<ChoiceDomainOp>();
+  assert(domain && "choice case must be nested in a choice domain");
+  auto domainRef = FlatSymbolRefAttr::get(domain.getSymNameAttr());
+  auto caseRef = SymbolRefAttr::get(domain.getSymNameAttr(),
+                                    {FlatSymbolRefAttr::get(choiceCase)});
+  build(builder, result, ChoiceType::get(builder.getContext(), domainRef),
+        caseRef);
+}
+
 LogicalResult ChoiceDomainOp::verify() {
   auto width = getWidth();
   if (width == 0 || width > 64)
@@ -3558,6 +3592,93 @@ ParamInstanceChoiceOp::getTargetChoices() {
     choices.emplace_back(cast<SymbolRefAttr>(getCaseNamesAttr()[i]),
                          cast<FlatSymbolRefAttr>(moduleNames[i + 1]));
   return choices;
+}
+
+/// Build a parameterized instance choice from a default module and a list of
+/// case/module pairs.  Exactly one of \p selector and \p selectorParameter
+/// must be set.
+static void
+buildParamInstanceChoiceOp(OpBuilder &builder, OperationState &result,
+                           Value selector, ParamDeclAttr selectorParameter,
+                           FModuleLike defaultModule,
+                           ArrayRef<std::pair<ChoiceCaseOp, FModuleLike>> cases,
+                           StringRef name, NameKindEnum nameKind) {
+  // Gather the result types and port information from the default module.
+  SmallVector<Type> resultTypes;
+  for (Attribute portType : defaultModule.getPortTypes())
+    resultTypes.push_back(cast<TypeAttr>(portType).getValue());
+
+  auto empty = builder.getArrayAttr({});
+  auto portAnnotations = builder.getArrayAttr(
+      SmallVector<Attribute, 16>(resultTypes.size(), empty));
+  auto domainInfo = defaultModule.getDomainInfoAttr();
+  if (domainInfo.empty())
+    domainInfo = builder.getArrayAttr(
+        SmallVector<Attribute, 16>(resultTypes.size(), empty));
+
+  // Gather the module and case names.  The default target comes first.
+  SmallVector<Attribute> moduleNames, caseNames;
+  moduleNames.push_back(
+      FlatSymbolRefAttr::get(defaultModule.getModuleNameAttr()));
+  for (auto [choiceCase, caseModule] : cases) {
+    auto domain = choiceCase->getParentOfType<ChoiceDomainOp>();
+    assert(domain && "choice case must be nested in a choice domain");
+    caseNames.push_back(SymbolRefAttr::get(
+        domain.getSymNameAttr(), {FlatSymbolRefAttr::get(choiceCase)}));
+    moduleNames.push_back(
+        FlatSymbolRefAttr::get(caseModule.getModuleNameAttr()));
+  }
+
+  ParamInstanceChoiceOp::build(
+      builder, result, resultTypes, selector, selectorParameter,
+      builder.getArrayAttr(moduleNames), builder.getArrayAttr(caseNames),
+      builder.getStringAttr(name),
+      NameKindEnumAttr::get(builder.getContext(), nameKind),
+      defaultModule.getPortDirectionsAttr(), defaultModule.getPortNamesAttr(),
+      domainInfo, empty, portAnnotations, defaultModule.getLayersAttr(),
+      /*inner_sym=*/{});
+}
+
+void ParamInstanceChoiceOp::build(
+    OpBuilder &builder, OperationState &result, Value selector,
+    FModuleLike defaultModule,
+    ArrayRef<std::pair<ChoiceCaseOp, FModuleLike>> cases, StringRef name,
+    NameKindEnum nameKind) {
+  buildParamInstanceChoiceOp(builder, result, selector, {}, defaultModule,
+                             cases, name, nameKind);
+}
+
+void ParamInstanceChoiceOp::build(
+    OpBuilder &builder, OperationState &result, ParamDeclAttr selectorParameter,
+    FModuleLike defaultModule,
+    ArrayRef<std::pair<ChoiceCaseOp, FModuleLike>> cases, StringRef name,
+    NameKindEnum nameKind) {
+  buildParamInstanceChoiceOp(builder, result, {}, selectorParameter,
+                             defaultModule, cases, name, nameKind);
+}
+
+void ParamInstanceChoiceOp::build(OpBuilder &builder, OperationState &result,
+                                  ArrayRef<PortInfo> ports, Value selector,
+                                  ParamDeclAttr selectorParameter,
+                                  ArrayAttr moduleNames, ArrayAttr caseNames,
+                                  StringRef name, NameKindEnum nameKind,
+                                  ArrayAttr layers) {
+  SmallVector<Type> resultTypes;
+  SmallVector<bool> directions;
+  SmallVector<Attribute> names, annotations, domains;
+  auto empty = builder.getArrayAttr({});
+  for (auto &port : ports) {
+    resultTypes.push_back(port.type);
+    directions.push_back(port.direction == Direction::Out);
+    names.push_back(port.name);
+    annotations.push_back(port.annotations.getArrayAttr());
+    domains.push_back(port.domains ? port.domains : empty);
+  }
+  build(builder, result, resultTypes, selector, selectorParameter, moduleNames,
+        caseNames, name, nameKind, directions, builder.getArrayAttr(names),
+        builder.getArrayAttr(domains), builder.getArrayAttr({}),
+        builder.getArrayAttr(annotations),
+        layers ? layers.getValue() : ArrayRef<Attribute>(), /*inner_sym=*/{});
 }
 
 FInstanceLike ParamInstanceChoiceOp::cloneWithInsertedPorts(

@@ -542,6 +542,32 @@ def ChoiceDomainOp : FIRRTLOp<"choice_domain", [
     $sym_name `width` $width attr-dict-with-keyword $body
   }];
   let hasVerifier = true;
+
+  let builders = [
+    OpBuilder<(ins "mlir::StringAttr":$sym_name, "uint32_t":$width,
+                   "llvm::ArrayRef<std::pair<mlir::StringAttr, uint64_t>>":$cases)>,
+    OpBuilder<(ins "mlir::StringRef":$sym_name, "uint32_t":$width,
+                   "llvm::ArrayRef<std::pair<mlir::StringRef, uint64_t>>":$cases)>
+  ];
+
+  let extraClassDeclaration = [{
+    /// Return the width of the integer type this domain is encoded as.
+    mlir::IntegerType getEncodingType() {
+      return mlir::IntegerType::get(getContext(), getWidth());
+    }
+
+    /// Look up the case with the given name, or null if there is none.
+    ChoiceCaseOp lookupCase(mlir::StringRef name) {
+      return lookupSymbol<ChoiceCaseOp>(name);
+    }
+
+    /// Return the encoding value of the named case, if it exists.
+    std::optional<uint64_t> getCaseValue(mlir::StringRef name) {
+      if (auto choiceCase = lookupCase(name))
+        return choiceCase.getValue();
+      return std::nullopt;
+    }
+  }];
 }
 
 def ChoiceCaseOp : FIRRTLOp<

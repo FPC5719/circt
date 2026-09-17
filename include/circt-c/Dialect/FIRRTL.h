@@ -266,6 +266,19 @@ MLIR_CAPI_EXPORTED MlirType
 firrtlTypeGetClass(MlirContext ctx, MlirAttribute name, size_t numberOfElements,
                    const FIRRTLClassElement *elements);
 
+/// Checks if this type is an elaboration-time choice type.
+MLIR_CAPI_EXPORTED bool firrtlTypeIsAChoice(MlirType type);
+
+/// Creates an elaboration-time choice type for the choice domain referenced
+/// by \p domain. The domain must be a flat symbol reference to a
+/// `firrtl.choice_domain` operation.
+MLIR_CAPI_EXPORTED MlirType firrtlTypeGetChoice(MlirContext ctx,
+                                                MlirAttribute domain);
+
+/// Returns the choice domain referenced by a choice type as a flat symbol
+/// reference.
+MLIR_CAPI_EXPORTED MlirAttribute firrtlTypeGetChoiceDomain(MlirType type);
+
 /// Returns this type with all ground types replaced with UInt<1>. This is
 /// used for `mem` operations.
 MLIR_CAPI_EXPORTED MlirType firrtlTypeGetMaskType(MlirType type);
