@@ -2824,13 +2824,8 @@ ParseResult FIRStmtParser::parseChoiceExp(Value &result) {
     return emitError(loc) << "unknown choice case '" << caseName
                           << "' in domain '" << domainName << "'";
 
-  auto symbol =
-      SymbolRefAttr::get(getContext(), domainName,
-                         {FlatSymbolRefAttr::get(getContext(), caseName)});
-  auto type = ChoiceType::get(getContext(),
-                              FlatSymbolRefAttr::get(getContext(), domainName));
   locationProcessor.setLoc(loc);
-  result = ChoiceConstantOp::create(builder, type, symbol).getResult();
+  result = ChoiceConstantOp::create(builder, caseOp).getResult();
   return success();
 }
 
@@ -5104,10 +5099,7 @@ ParseResult FIRStmtParser::parseParamInstanceChoice() {
     return emitError(loc) << "use of undefined choice domain '" << domainName
                           << "'";
 
-  SmallVector<Attribute> moduleNames;
-  SmallVector<Attribute> caseNames;
-  moduleNames.push_back(
-      FlatSymbolRefAttr::get(getContext(), defaultModuleName));
+  SmallVector<std::pair<ChoiceCaseOp, FModuleLike>> cases;
 
   auto baseIndent = getIndentation();
   if (!baseIndent)
@@ -5122,38 +5114,20 @@ ParseResult FIRStmtParser::parseParamInstanceChoice() {
         parseId(moduleName, "expected module name"))
       return failure();
 
-    if (!domain.lookupSymbol<ChoiceCaseOp>(caseName))
+    auto choiceCase = domain.lookupSymbol<ChoiceCaseOp>(caseName);
+    if (!choiceCase)
       return emitError(loc) << "use of undefined choice case '" << caseName
                             << "' in domain '" << domainName << "'";
-    if (!getReferencedModule(loc, moduleName))
+    auto caseModule = getReferencedModule(loc, moduleName);
+    if (!caseModule)
       return failure();
 
-    moduleNames.push_back(FlatSymbolRefAttr::get(getContext(), moduleName));
-    caseNames.push_back(
-        SymbolRefAttr::get(getContext(), domainName,
-                           {FlatSymbolRefAttr::get(getContext(), caseName)}));
+    cases.emplace_back(choiceCase, caseModule);
   }
 
-  SmallVector<Type> resultTypes;
-  llvm::transform(
-      defaultModule.getPortTypes(), std::back_inserter(resultTypes),
-      [](Attribute type) { return cast<TypeAttr>(type).getValue(); });
-  auto emptyArray = getConstants().emptyArrayAttr;
-  auto portAnnotations = builder.getArrayAttr(
-      SmallVector<Attribute>(resultTypes.size(), emptyArray));
-  auto domainInfo = defaultModule.getDomainInfoAttr();
-  if (domainInfo.empty())
-    domainInfo = builder.getArrayAttr(
-        SmallVector<Attribute>(resultTypes.size(), emptyArray));
-
-  auto result = ParamInstanceChoiceOp::create(
-      builder, resultTypes, selector, /*selectorParameter=*/{},
-      builder.getArrayAttr(moduleNames), builder.getArrayAttr(caseNames),
-      builder.getStringAttr(id),
-      NameKindEnumAttr::get(getContext(), NameKindEnum::InterestingName),
-      defaultModule.getPortDirectionsAttr(), defaultModule.getPortNamesAttr(),
-      domainInfo, emptyArray, portAnnotations, defaultModule.getLayersAttr(),
-      /*inner_sym=*/{});
+  auto result =
+      ParamInstanceChoiceOp::create(builder, selector, defaultModule, cases, id,
+                                    NameKindEnum::InterestingName);
 
   UnbundledValueEntry unbundledValueEntry;
   unbundledValueEntry.reserve(result.getNumResults());
@@ -6272,7 +6246,7 @@ ParseResult FIRCircuitParser::parseChoiceDomain(CircuitOp circuit,
     return emitError("choice domain width must be between 1 and 64"), failure();
 
   auto builder = circuit.getBodyBuilder();
-  auto domain = ChoiceDomainOp::create(builder, info.getLoc(), name,
+  auto domain = ChoiceDomainOp::create(builder, info.getLoc(), name, {},
                                        static_cast<unsigned>(width));
   auto *block = new Block;
   domain.getBody().push_back(block);
@@ -6306,7 +6280,7 @@ ParseResult FIRCircuitParser::parseChoiceDomain(CircuitOp circuit,
              failure();
     if (caseInfo.parseOptionalInfo())
       return failure();
-    ChoiceCaseOp::create(builder, caseInfo.getLoc(), caseName, value);
+    ChoiceCaseOp::create(builder, caseInfo.getLoc(), caseName, {}, value);
   }
   getConstants().choiceDomainMap[name.getValue()] = domain;
   return success();

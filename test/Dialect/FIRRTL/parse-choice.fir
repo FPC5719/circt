@@ -46,3 +46,20 @@ circuit ChoiceExpression :
   public module ChoiceExpression :
     ; expected-error @below {{Node cannot be analog and must be passive or passive under a flip '!firrtl.choice<@Impl>'}}
     node bad = choice(Impl, A)
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit BadEncoding :
+  choice_domain Impl width 2 :
+    ; expected-error @below {{value 4 does not fit domain width 2}}
+    choice_case Bad = 4
+
+;// -----
+
+FIRRTL version 7.0.0
+circuit DuplicateEncoding :
+  choice_domain Impl width 2 :
+    choice_case A = 0
+    ; expected-error @below {{duplicate choice encoding 0}}
+    choice_case AlsoA = 0

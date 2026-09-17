@@ -281,6 +281,22 @@ MlirType firrtlTypeGetMaskType(MlirType type) {
   return wrap(baseType.getMaskType());
 }
 
+bool firrtlTypeIsAChoice(MlirType type) {
+  return isa<ChoiceType>(unwrap(type));
+}
+
+MlirType firrtlTypeGetChoice(MlirContext ctx, MlirAttribute domain) {
+  auto domainSymbol = dyn_cast<FlatSymbolRefAttr>(unwrap(domain));
+  assert(domainSymbol && "domain must be FlatSymbolRefAttr");
+  return wrap(ChoiceType::get(unwrap(ctx), domainSymbol));
+}
+
+MlirAttribute firrtlTypeGetChoiceDomain(MlirType type) {
+  auto choiceType = dyn_cast<ChoiceType>(unwrap(type));
+  assert(choiceType && "unexpected type, must be a choice type");
+  return wrap(choiceType.getDomain());
+}
+
 //===----------------------------------------------------------------------===//
 // Attribute API.
 //===----------------------------------------------------------------------===//

@@ -324,6 +324,19 @@ void testTypeDiscriminantsAndQueries(MlirContext ctx) {
              openBundle, mlirStringRefCreateFromCString("f2")) == 1);
 }
 
+void testChoiceType(MlirContext ctx) {
+  MlirAttribute domain =
+      mlirFlatSymbolRefAttrGet(ctx, mlirStringRefCreateFromCString("Impl"));
+  MlirType choice = firrtlTypeGetChoice(ctx, domain);
+  assert(firrtlTypeIsAChoice(choice));
+  assert(mlirAttributeEqual(firrtlTypeGetChoiceDomain(choice), domain));
+
+  // A choice type is a property type, not a hardware type.
+  assert(!firrtlTypeIsAChoice(firrtlTypeGetUInt(ctx, 1)));
+  assert(!firrtlTypeIsAChoice(firrtlTypeGetInteger(ctx)));
+  assert(!firrtlTypeIsAChoice(firrtlTypeGetPath(ctx)));
+}
+
 void testTypeGetMaskType(MlirContext ctx) {
   assert(mlirTypeEqual(firrtlTypeGetMaskType(firrtlTypeGetUInt(ctx, 32)),
                        firrtlTypeGetUInt(ctx, 1)));
@@ -378,6 +391,7 @@ int main(void) {
   testImportAnnotations(ctx);
   testAttrGetIntegerFromString(ctx);
   testTypeDiscriminantsAndQueries(ctx);
+  testChoiceType(ctx);
   testTypeGetMaskType(ctx);
   return 0;
 }

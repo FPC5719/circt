@@ -294,6 +294,27 @@ def ParamInstanceChoiceOp : HardwareDeclOp<"param_instance_choice", [
     SmallVector<std::pair<SymbolRefAttr, FlatSymbolRefAttr>, 1>
     getTargetChoices();
   }];
+
+  let builders = [
+    OpBuilder<(ins "mlir::Value":$selector,
+                   "FModuleLike":$defaultModule,
+                   "ArrayRef<std::pair<ChoiceCaseOp, FModuleLike>>":$cases,
+                   "mlir::StringRef":$name,
+                   CArg<"NameKindEnum", "NameKindEnum::DroppableName">:$nameKind)>,
+    OpBuilder<(ins "ParamDeclAttr":$selectorParameter,
+                   "FModuleLike":$defaultModule,
+                   "ArrayRef<std::pair<ChoiceCaseOp, FModuleLike>>":$cases,
+                   "mlir::StringRef":$name,
+                   CArg<"NameKindEnum", "NameKindEnum::DroppableName">:$nameKind)>,
+    OpBuilder<(ins "ArrayRef<PortInfo>":$ports,
+                   "mlir::Value":$selector,
+                   "ParamDeclAttr":$selectorParameter,
+                   "ArrayAttr":$moduleNames,
+                   "ArrayAttr":$caseNames,
+                   "mlir::StringRef":$name,
+                   CArg<"NameKindEnum", "NameKindEnum::DroppableName">:$nameKind,
+                   CArg<"ArrayAttr", "{}">:$layers)>
+  ];
 }
 
 
