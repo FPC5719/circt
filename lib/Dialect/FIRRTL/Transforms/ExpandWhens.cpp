@@ -359,6 +359,7 @@ public:
 
   void visitDecl(InstanceOp op) { visitInstanceDecl(op); }
   void visitDecl(InstanceChoiceOp op) { visitInstanceDecl(op); }
+  void visitDecl(ParamInstanceChoiceOp op) { visitInstanceDecl(op); }
 
   void visitDecl(ObjectOp op) {
     declareSinks(op, Flow::Source, /*local=*/true);

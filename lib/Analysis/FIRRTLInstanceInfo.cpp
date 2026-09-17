@@ -42,6 +42,11 @@ bool InstanceInfo::isInstanceUnderLayer(InstanceChoiceOp inst) {
          inst->getParentOfType<sv::IfDefOp>();
 }
 
+bool InstanceInfo::isInstanceUnderLayer(ParamInstanceChoiceOp inst) {
+  return inst->getParentOfType<LayerBlockOp>() ||
+         inst->getParentOfType<sv::IfDefOp>();
+}
+
 bool InstanceInfo::LatticeValue::isUnknown() const { return kind == Unknown; }
 
 bool InstanceInfo::LatticeValue::isConstant() const { return kind == Constant; }
@@ -158,6 +163,10 @@ InstanceInfo::InstanceInfo(Operation *op, mlir::AnalysisManager &am) {
       if (auto instanceChoiceOp = useIt->getInstance<InstanceChoiceOp>()) {
         attributes.inInstanceChoice.mergeIn(true);
         underLayer = isInstanceUnderLayer(instanceChoiceOp);
+      } else if (auto paramChoiceOp =
+                     useIt->getInstance<ParamInstanceChoiceOp>()) {
+        attributes.inInstanceChoice.mergeIn(true);
+        underLayer = isInstanceUnderLayer(paramChoiceOp);
       } else {
         attributes.inInstanceChoice.mergeIn(parentAttrs.inInstanceChoice);
       }

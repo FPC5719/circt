@@ -1896,6 +1896,16 @@ struct ModuleNameSanitizer : OpReduction<firrtl::CircuitOp> {
       auto newName = StringAttr::get(ctx, nameGenerator.getNextName(ns));
       if (failed(renameModule(module, newName)))
         return failure();
+
+      // Both instance choice kinds keep a debug instance name and a copy of the
+      // instantiated module's port names, which have to follow the rename.
+      auto fixupChoiceOp = [&](auto choiceOp) {
+        if (choiceOp.getDefaultTargetAttr().getAttr() == newName)
+          choiceOp.setName(newName);
+        if (shouldReplacePorts)
+          choiceOp.setPortNamesAttr(ArrayAttr::get(ctx, newPortNames));
+      };
+
       for (auto *use : node->uses()) {
         auto useOp = use->getInstance();
         if (auto instanceOp = dyn_cast<firrtl::InstanceOp>(*useOp)) {
@@ -1907,11 +1917,10 @@ struct ModuleNameSanitizer : OpReduction<firrtl::CircuitOp> {
             instanceOp.setPortNamesAttr(ArrayAttr::get(ctx, newPortNames));
         } else if (auto instanceChoiceOp =
                        dyn_cast<firrtl::InstanceChoiceOp>(*useOp)) {
-          if (instanceChoiceOp.getDefaultTargetAttr().getAttr() == newName)
-            instanceChoiceOp.setName(newName);
-          if (shouldReplacePorts)
-            instanceChoiceOp.setPortNamesAttr(
-                ArrayAttr::get(ctx, newPortNames));
+          fixupChoiceOp(instanceChoiceOp);
+        } else if (auto paramInstanceChoiceOp =
+                       dyn_cast<firrtl::ParamInstanceChoiceOp>(*useOp)) {
+          fixupChoiceOp(paramInstanceChoiceOp);
         } else if (auto objectOp = dyn_cast<firrtl::ObjectOp>(*useOp)) {
           // ObjectOp stores the class name in its result type.  Result types
           // are not updated by SymbolTable::rename (AttrTypeReplacer is called

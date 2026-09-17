@@ -184,3 +184,26 @@ firrtl.circuit "Issue10885" {
     %x = firrtl.instance c @Child(out x: !firrtl.uint<1>)
   }
 }
+
+// CHECK-LABEL: UndrivenParamInstanceChoiceDomainPort
+firrtl.circuit "UndrivenParamInstanceChoiceDomainPort" {
+  firrtl.domain @ClockDomain
+
+  firrtl.choice_domain @Impl width 1 {
+    firrtl.choice_case @Fast = 1
+  }
+
+  firrtl.extmodule @Foo(in c : !firrtl.domain<@ClockDomain()>)
+  firrtl.extmodule @Bar(in c : !firrtl.domain<@ClockDomain()>)
+
+  firrtl.module @UndrivenParamInstanceChoiceDomainPort(in %impl: !firrtl.choice<@Impl>) {
+    // expected-note  @+2 {{in param_instance_choice "inst"}}
+    // expected-error @+1 {{undriven domain port "c"}}
+    %inst_c = "firrtl.param_instance_choice"(%impl) <{
+      moduleNames = [@Foo, @Bar], caseNames = [@Impl::@Fast],
+      name = "inst", nameKind = #firrtl<name_kind droppable_name>,
+      portDirections = array<i1: false>, portNames = ["c"], domainInfo = [[]],
+      annotations = [], portAnnotations = [[]], layers = []
+    }> : (!firrtl.choice<@Impl>) -> !firrtl.domain<@ClockDomain()>
+  }
+}

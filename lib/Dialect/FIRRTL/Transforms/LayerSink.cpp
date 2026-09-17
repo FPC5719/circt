@@ -105,6 +105,17 @@ public:
               return true;
           return false;
         })
+        .Case<ParamInstanceChoiceOp>([&](ParamInstanceChoiceOp op) {
+          for (auto module : op.getReferencedModuleNamesAttr())
+            if (effectfulModules.contains(cast<StringAttr>(module)))
+              return true;
+          // A parameterized instance choice selects its target with a property
+          // operand.  It can be moved together with its selector, but a
+          // selector that is defined outside the layer block (e.g. a module
+          // input port) cannot be captured by the layer block.
+          auto selector = op.getSelector();
+          return selector && isa<BlockArgument>(selector);
+        })
         .Case<FConnectLike, WireOp, RegResetOp, RegOp, MemOp, NodeOp>(
             [](auto) { return false; })
         .Default([](auto op) {
@@ -346,7 +357,7 @@ void DemandInfo::updateConnects(WorkStack &work, Operation *op, Demand demand) {
         for (auto result : op->getResults())
           updateConnects(work, result, demand);
       })
-      .Case<InstanceOp, InstanceChoiceOp>([&](auto op) {
+      .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp>([&](auto op) {
         for (auto [i, dir] : llvm::enumerate(op.getPortDirections()))
           if (direction::get(dir) == Direction::In)
             updateConnects(work, op->getResult(i), demand);

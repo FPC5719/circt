@@ -944,6 +944,10 @@ void ModuleState::noteLocation(InFlightDiagnostic &diag, Operation *op) {
     note << "in instance_choice " << inst.getNameAttr();
     return;
   }
+  if (auto inst = dyn_cast<ParamInstanceChoiceOp>(op)) {
+    note << "in param_instance_choice " << inst.getNameAttr();
+    return;
+  }
 
   note << "here";
 }

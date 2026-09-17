@@ -426,12 +426,13 @@ static bool getDeclName(Value value, SmallString<32> &string) {
 
   auto *op = value.getDefiningOp();
   return TypeSwitch<Operation *, bool>(op)
-      .Case<InstanceOp, InstanceChoiceOp, MemOp>([&](auto op) {
-        string += op.getName();
-        string += ".";
-        string += op.getPortName(cast<OpResult>(value).getResultNumber());
-        return true;
-      })
+      .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp, MemOp>(
+          [&](auto op) {
+            string += op.getName();
+            string += ".";
+            string += op.getPortName(cast<OpResult>(value).getResultNumber());
+            return true;
+          })
       .Case<WireOp, NodeOp, RegOp, RegResetOp>([&](auto op) {
         string += op.getName();
         return true;

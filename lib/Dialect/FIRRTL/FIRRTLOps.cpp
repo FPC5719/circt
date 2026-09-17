@@ -3452,6 +3452,23 @@ LogicalResult ParamInstanceChoiceOp::verify() {
                          "or parameter reference");
   }
 
+  // The instance may only be instantiated under its required layers.  The
+  // layer requirements are the same for all candidate modules.
+  auto ambientLayers = getAmbientLayersAt(getOperation());
+  SmallVector<SymbolRefAttr> missingLayers;
+  for (auto layer : getLayersAttr().getAsRange<SymbolRefAttr>())
+    if (!isLayerCompatibleWith(layer, ambientLayers))
+      missingLayers.push_back(layer);
+
+  if (!missingLayers.empty()) {
+    auto diag =
+        emitOpError("ambient layers are insufficient to instantiate module");
+    auto &note = diag.attachNote();
+    note << "missing layer requirements: ";
+    interleaveComma(missingLayers, note);
+    return failure();
+  }
+
   return success();
 }
 

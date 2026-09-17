@@ -154,3 +154,62 @@ firrtl.circuit "DedupFormalParameters" {
     firrtl.connect %b, %pb_out : !firrtl.uint<8>
   }
 }
+
+// -----
+
+// The module names referenced by a parameterized instance choice take part in
+// the structural hash, so two wrappers that only differ in which copy of an
+// otherwise identical candidate module they reference are deduplicated once
+// the candidates are merged.
+// CHECK-LABEL: firrtl.circuit "DedupChoiceCandidates"
+firrtl.circuit "DedupChoiceCandidates" {
+  firrtl.choice_domain @Impl width 2 {
+    firrtl.choice_case @Default = 0
+    firrtl.choice_case @Fast = 1
+  }
+
+  // The two default modules and the two alternative modules are identical and
+  // are deduplicated into one module each.
+  firrtl.module private @DefaultImplA(out %out: !firrtl.uint<8>) {}
+  firrtl.module private @DefaultImplB(out %out: !firrtl.uint<8>) {}
+  firrtl.module private @FastImplA(out %out: !firrtl.uint<8>) {}
+  firrtl.module private @FastImplB(out %out: !firrtl.uint<8>) {}
+
+  firrtl.module private @LeafA(in %impl: !firrtl.choice<@Impl>,
+                               out %out: !firrtl.uint<8>) {
+    %selected = "firrtl.param_instance_choice"(%impl) <{
+      moduleNames = [@DefaultImplA, @FastImplA],
+      caseNames = [@Impl::@Fast],
+      name = "selected", nameKind = #firrtl<name_kind droppable_name>,
+      portDirections = array<i1: true>, portNames = ["out"], domainInfo = [[]],
+      annotations = [], portAnnotations = [[]], layers = []
+    }> : (!firrtl.choice<@Impl>) -> !firrtl.uint<8>
+    firrtl.connect %out, %selected : !firrtl.uint<8>
+  }
+  firrtl.module private @LeafB(in %impl: !firrtl.choice<@Impl>,
+                               out %out: !firrtl.uint<8>) {
+    %selected = "firrtl.param_instance_choice"(%impl) <{
+      moduleNames = [@DefaultImplB, @FastImplB],
+      caseNames = [@Impl::@Fast],
+      name = "selected", nameKind = #firrtl<name_kind droppable_name>,
+      portDirections = array<i1: true>, portNames = ["out"], domainInfo = [[]],
+      annotations = [], portAnnotations = [[]], layers = []
+    }> : (!firrtl.choice<@Impl>) -> !firrtl.uint<8>
+    firrtl.connect %out, %selected : !firrtl.uint<8>
+  }
+
+  firrtl.module @DedupChoiceCandidates(out %a: !firrtl.uint<8>,
+                                       out %b: !firrtl.uint<8>) {
+    %impl = firrtl.choice.constant @Impl::@Fast : !firrtl.choice<@Impl>
+    // Both wrappers are identical once their candidates are merged, so the two
+    // instances must reference the same module.
+    // CHECK: firrtl.instance a @[[LEAF:[A-Za-z]+]]
+    // CHECK: firrtl.instance b @[[LEAF]]
+    %a_impl, %a_out = firrtl.instance a @LeafA(in impl: !firrtl.choice<@Impl>, out out: !firrtl.uint<8>)
+    %b_impl, %b_out = firrtl.instance b @LeafB(in impl: !firrtl.choice<@Impl>, out out: !firrtl.uint<8>)
+    firrtl.propassign %a_impl, %impl : !firrtl.choice<@Impl>
+    firrtl.propassign %b_impl, %impl : !firrtl.choice<@Impl>
+    firrtl.connect %a, %a_out : !firrtl.uint<8>
+    firrtl.connect %b, %b_out : !firrtl.uint<8>
+  }
+}

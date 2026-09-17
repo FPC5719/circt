@@ -607,12 +607,13 @@ static void getDeclName(Value value, SmallString<64> &string, bool nameSafe) {
           string += op.getInstanceName();
           value = nullptr;
         })
-        .Case<InstanceOp, InstanceChoiceOp, MemOp>([&](auto op) {
-          string += op.getName();
-          string += nameSafe ? "_" : ".";
-          string += op.getPortName(cast<OpResult>(value).getResultNumber());
-          value = nullptr;
-        })
+        .Case<InstanceOp, InstanceChoiceOp, ParamInstanceChoiceOp, MemOp>(
+            [&](auto op) {
+              string += op.getName();
+              string += nameSafe ? "_" : ".";
+              string += op.getPortName(cast<OpResult>(value).getResultNumber());
+              value = nullptr;
+            })
         .Case<FNamableOp>([&](auto op) {
           string += op.getName();
           value = nullptr;

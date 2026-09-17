@@ -459,11 +459,12 @@ static void lowerModuleBody(FModuleOp mod,
                     newOp.getResult(p.resultID));
     }
     // Zero Width ports may have dangling connects since they are not preserved
-    // and do not have bounce wires.
-    for (auto *use : llvm::make_early_inc_range(inst->getUsers())) {
-      assert(isa<MatchingConnectOp>(use) || isa<ConnectOp>(use));
-      use->erase();
-    }
+    // and do not have bounce wires.  Other users, such as the property
+    // assignments which forward a choice parameter, were already retargeted
+    // above and must be kept.
+    for (auto *use : llvm::make_early_inc_range(inst->getUsers()))
+      if (isa<MatchingConnectOp, ConnectOp>(use))
+        use->erase();
     inst->erase();
     return;
   };
@@ -489,6 +490,34 @@ static void lowerModuleBody(FModuleOp mod,
                 theBuilder, newPorts, inst.getModuleNamesAttr(),
                 inst.getCaseNamesAttr(), inst.getName(), inst.getNameKind(),
                 inst.getAnnotationsAttr(), inst.getLayersAttr(),
+                inst.getInnerSymAttr());
+          });
+        })
+        .Case<ParamInstanceChoiceOp>([&](auto inst) {
+          fixupInstance(inst, [&](ImplicitLocOpBuilder &theBuilder,
+                                  ParamInstanceChoiceOp inst,
+                                  ArrayRef<PortInfo> newPorts) {
+            auto *context = theBuilder.getContext();
+            SmallVector<Type> types;
+            SmallVector<bool> directions;
+            SmallVector<Attribute> names, domains, annotations;
+            for (auto p : newPorts) {
+              types.push_back(p.type);
+              directions.push_back(p.direction == Direction::Out);
+              names.push_back(p.name);
+              domains.push_back(p.domains ? p.domains
+                                          : ArrayAttr::get(context, {}));
+              annotations.push_back(p.annotations.getArrayAttr());
+            }
+            return ParamInstanceChoiceOp::create(
+                theBuilder, inst.getLoc(), types, inst.getSelector(),
+                inst.getSelectorParameterAttr(), inst.getModuleNamesAttr(),
+                inst.getCaseNamesAttr(), inst.getNameAttr(),
+                inst.getNameKindAttr(),
+                direction::packAttribute(context, directions),
+                ArrayAttr::get(context, names),
+                ArrayAttr::get(context, domains), inst.getAnnotationsAttr(),
+                ArrayAttr::get(context, annotations), inst.getLayersAttr(),
                 inst.getInnerSymAttr());
           });
         });
@@ -523,7 +552,8 @@ void LowerSignaturesPass::runOnOperation() {
     // any module instantiated by one must use the scalarized convention.
     if (llvm::any_of(instanceGraph.lookup(mod)->uses(),
                      [](InstanceRecord *use) {
-                       return use->getInstance<InstanceChoiceOp>();
+                       return isa<InstanceChoiceOp, ParamInstanceChoiceOp>(
+                           use->getInstance().getOperation());
                      }))
       convention = Convention::Scalarized;
     if (lowerModuleSignature(mod, convention, cache, portMap[mod.getNameAttr()])

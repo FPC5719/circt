@@ -1868,7 +1868,8 @@ void LowerTypesPass::runOnOperation() {
     // any module instantiated by one must use the scalarized convention.
     if (llvm::any_of(instanceGraph.lookup(module)->uses(),
                      [](InstanceRecord *use) {
-                       return use->getInstance<InstanceChoiceOp>();
+                       return isa<InstanceChoiceOp, ParamInstanceChoiceOp>(
+                           use->getInstance().getOperation());
                      }))
       convention = Convention::Scalarized;
     conventionTable.insert({module, convention});

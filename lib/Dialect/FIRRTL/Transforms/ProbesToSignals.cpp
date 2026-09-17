@@ -149,6 +149,9 @@ public:
   LogicalResult visitInstanceLike(Operation *op);
   LogicalResult visitDecl(InstanceOp op) { return visitInstanceLike(op); }
   LogicalResult visitDecl(InstanceChoiceOp op) { return visitInstanceLike(op); }
+  LogicalResult visitDecl(ParamInstanceChoiceOp op) {
+    return visitInstanceLike(op);
+  }
 
   // Probe operations.
 

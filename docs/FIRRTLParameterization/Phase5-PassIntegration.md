@@ -87,5 +87,45 @@ instead.
 - Inlining does not yet forward choice parameters into the parent; inline-marked
   modules are retained (with a warning) until the choice parameters are
   materialized.
-- `firrtl-lower-signatures` is not scheduled by `firtool` and has no
-  choice-specific handling.  It is left unsupported in V1.
+
+`firrtl-lower-signatures` is scheduled by `firtool` for FIRRTL text inputs and
+now rewrites parameterized choices like option-based ones (item 11).
+
+### Parity checklist
+
+Every pass that special-cases `firrtl.instance_choice` was re-checked against
+`firrtl.param_instance_choice`.  The sites below did not handle the
+parameterized operation; each one now either grows the same special case or
+emits a diagnostic, and each item lists the site, the required behavior and the
+focused test that covers it.
+
+| # | Site | Required behavior | Test | Status |
+| --- | --- | --- | --- | --- |
+| 1 | `CheckCombLoops.cpp:131,445` | Conservatively record dataflow through every candidate, like `handleInstanceChoiceOp`, so combinational loops through a parameterized choice are detected. | `check-comb-loops-choice-parameters.mlir` | done |
+| 2 | `ExpandWhens.cpp:361` | Declare the op's results as initialization sinks so unconnected input ports are diagnosed. | `expand-whens-choice-parameters-errors.mlir` | done |
+| 3 | `FIRRTLReductions.cpp:1909` | Fix up the instance name and port names when the reduction renames a referenced module, like `InstanceChoiceOp`. | `circt-reduce/name-sanitizer-choice-parameters.mlir` | done |
+| 4 | `LowerTypes.cpp:1871` | Force every module instantiated by a parameterized choice to the scalarized convention, so all candidates share one port shape. | `lower-types-choice-parameters-convention.mlir` | done |
+| 5 | `FIRRTLInstanceInfo.cpp:40,158`, `FIRRTLInstanceInfo.h:45` | Add the `isInstanceUnderLayer` overload and update the `underLayer`/`inInstanceChoice` lattice for the op. | `Analysis/firrtl-test-instance-info.mlir` | done |
+| 6 | `Dedup.cpp:311` | Record the op's `moduleNames` as lazily-resolved referred module names so the structural hash tracks deduplicated candidate modules (the cached `moduleNamesAttr` was never initialized, so this was dead for `InstanceChoiceOp` as well). | `dedup-choice-parameters.mlir` | done |
+| 7 | `LayerSink.cpp:102` | Move a parameterized choice into a layer block when it is pure and its selector can move with it; keep it in place when a candidate is effectful or when the selector is defined outside the layer block. | `layer-sink-choice-parameters.mlir` | done |
+| 8 | `LayerSink.cpp:349` | Propagate demand through the op's input ports so a sunk choice keeps the drivers it needs. | `layer-sink-choice-parameters.mlir` | done |
+| 9 | `FIRRTLUtils.cpp:610` | Name values defined by the op (`instance.port`) when building field and path names. | `lower-xmr-choice-parameters.mlir` | done |
+| 10 | `SpecializeLayers.cpp:448` | Dispatch the op to the generic `FInstanceLike` specializer instead of the default move. | `specialize-layers-choice-parameters.mlir` | done |
+| 11 | `LowerSignatures.cpp:484,526` | Rewrite the op's ports like `InstanceChoiceOp`, keep the forwarding `firrtl.propassign`, and force the scalarized convention on its candidates. | `lower-signatures-choice-parameters.mlir` | done |
+| 12 | `InferResets.cpp:429` | Name the op's ports in reset-inference diagnostics. | no dedicated test: `guessRoot` always reports a source signal (module port or invalid value) as the root of a reset network, so the instance port cannot be the reported root. The shared `getDeclName` pattern is covered by item 9. | done |
+| 13 | `InferDomains.cpp:943` | Report the containing `param_instance_choice` in domain diagnostics. | `infer-domains-check-errors.mlir` | done |
+| 14 | `ProbesToSignals.cpp:151` | Handle the op through `visitInstanceLike` for parity (probe ports are already rejected by the verifier). | `probes-to-signals-choice-parameters.mlir` | done |
+| 15 | `ParamInstanceChoiceOp::verify` | Reject a parameterized choice that is instantiated outside its candidates' required layers (`ambient layers are insufficient`, like `InstanceOp`/`InstanceChoiceOp`). | `param-instance-choice-layers-errors.mlir` | done |
+
+Item 11 is required for the CHIRRTL-to-low-FIRRTL pipeline: `firtool` schedules
+`firrtl-lower-signatures` for FIRRTL text input, so silently skipping the
+operation (or diagnosing) breaks otherwise valid designs.
+
+### Consequences of item 15 and layer blocks
+
+Adding the ambient-layer verifier exposes a V1 constraint that the tests now
+pin down: a `firrtl.layerblock` may not capture a property value, so a
+parameterized choice inside a layer block must take its selector from a choice
+constant defined in that same block (or from an already materialized selector
+parameter).  A selector that is a module input port can only be used outside
+layer blocks.

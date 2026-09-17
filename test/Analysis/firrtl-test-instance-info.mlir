@@ -631,3 +631,41 @@ firrtl.circuit "Top" {
   }
 }
 
+// -----
+
+// A parameterized instance choice is an instance choice for the purposes of the
+// analysis, and it is under a layer when it sits in a layer block.
+firrtl.circuit "ParamChoice" {
+  firrtl.layer @A bind {}
+  firrtl.choice_domain @Impl width 1 {
+    firrtl.choice_case @Fast = 1
+  }
+  // CHECK:      @Target
+  // CHECK-NEXT:   isDut: false
+  // CHECK:        anyInstanceUnderLayer: true
+  // CHECK-NEXT:   allInstancesUnderLayer: true
+  // CHECK:        anyInstanceInInstanceChoice: true
+  // CHECK-NEXT:   moduleContainsProperties: false
+  firrtl.module private @Target() {}
+  // CHECK:      @Other
+  // CHECK-NEXT:   isDut: false
+  // CHECK:        anyInstanceUnderLayer: true
+  // CHECK-NEXT:   allInstancesUnderLayer: true
+  // CHECK:        anyInstanceInInstanceChoice: true
+  // CHECK-NEXT:   moduleContainsProperties: false
+  firrtl.module private @Other() {}
+  // CHECK:      @ParamChoice
+  // CHECK-NEXT:   isDut: false
+  // CHECK:        anyInstanceInInstanceChoice: false
+  firrtl.module @ParamChoice() {
+    firrtl.layerblock @A {
+      %impl = firrtl.choice.constant @Impl::@Fast : !firrtl.choice<@Impl>
+      "firrtl.param_instance_choice"(%impl) <{
+        moduleNames = [@Target, @Other], caseNames = [@Impl::@Fast],
+        name = "sel", nameKind = #firrtl<name_kind droppable_name>,
+        portDirections = array<i1>, portNames = [], domainInfo = [],
+        annotations = [], portAnnotations = [], layers = []
+      }> : (!firrtl.choice<@Impl>) -> ()
+    }
+  }
+}
