@@ -128,8 +128,8 @@ public:
           .Case<RefForceOp, RefForceInitialOp>(
               [&](auto ref) { handleRefForce(ref.getDest(), ref.getSrc()); })
           .Case<InstanceOp>([&](auto inst) { handleInstanceOp(inst); })
-          .Case<InstanceChoiceOp>(
-              [&](auto inst) { handleInstanceChoiceOp(inst); })
+          .Case<InstanceChoiceOp, ParamInstanceChoiceOp>(
+              [&](auto inst) { handleChoiceOp(inst); })
           .Case<SubindexOp>([&](SubindexOp sub) {
             recordValueRefersToFieldRef(
                 sub.getInput(),
@@ -439,10 +439,11 @@ public:
     processInstancePorts(refMod, inst.getResults());
   }
 
-  // For InstanceChoiceOp, conservatively process all possible target modules.
+  // For an instance choice, conservatively process all possible target modules.
   // Since we cannot determine which module will be selected at runtime, we
   // must consider combinational paths through all alternatives.
-  void handleInstanceChoiceOp(InstanceChoiceOp inst) {
+  template <typename ChoiceOp>
+  void handleChoiceOp(ChoiceOp inst) {
     // Process all referenced modules (default + alternatives)
     for (auto moduleName : inst.getReferencedModuleNamesAttr()) {
       auto moduleNameStr = cast<StringAttr>(moduleName);

@@ -102,6 +102,7 @@ struct StructuralHasherSharedConstants {
   explicit StructuralHasherSharedConstants(MLIRContext *context) {
     portTypesAttr = StringAttr::get(context, "portTypes");
     moduleNameAttr = StringAttr::get(context, "moduleName");
+    moduleNamesAttr = StringAttr::get(context, "moduleNames");
     portNamesAttr = StringAttr::get(context, "portNames");
     nonessentialAttributes.insert(StringAttr::get(context, "annotations"));
     nonessentialAttributes.insert(StringAttr::get(context, "convention"));
@@ -308,7 +309,8 @@ private:
         continue;
       }
 
-      if (isa<InstanceChoiceOp>(op) && name == constants.moduleNamesAttr) {
+      if (isa<InstanceChoiceOp, ParamInstanceChoiceOp>(op) &&
+          name == constants.moduleNamesAttr) {
         for (auto module : cast<ArrayAttr>(value))
           referredModuleNames.push_back(
               cast<FlatSymbolRefAttr>(module).getAttr());

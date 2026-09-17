@@ -44,6 +44,13 @@ public:
   /// - Under an sv::IfDefOp
   static bool isInstanceUnderLayer(InstanceChoiceOp inst);
 
+  /// Return true if a parameterized instance choice op should be considered
+  /// "under a layer" for the purposes of metadata emission and other analyses.
+  /// This includes instances that are:
+  /// - Under a LayerBlockOp
+  /// - Under an sv::IfDefOp
+  static bool isInstanceUnderLayer(ParamInstanceChoiceOp inst);
+
   /// A lattice value to record the value of a property.
   class LatticeValue {
 

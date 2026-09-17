@@ -446,7 +446,8 @@ struct SpecializeLayers {
     for (auto &op : llvm::make_early_inc_range(llvm::reverse(*block))) {
       TypeSwitch<Operation *>(&op)
           .Case<LayerBlockOp, WhenOp, MatchOp, InstanceOp, InstanceChoiceOp,
-                WireOp, RefDefineOp, RefSubOp, RefCastOp>(
+                ParamInstanceChoiceOp, WireOp, RefDefineOp, RefSubOp,
+                RefCastOp>(
               [&](auto op) { specializeOp(op, insertionPoint, removedSyms); })
           .Default([&](Operation *op) {
             // By default all operations should be inlined from an enabled
