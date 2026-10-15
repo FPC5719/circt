@@ -36,3 +36,8 @@ page](https://github.com/freechipsproject/firrtl).
 [include "Dialects/FIRRTLAttributes.md"]
 
 [include "Dialects/FIRRTLOpInterfaces.md"]
+
+## Elaboration-Time Choice Parameters
+
+[Choice parameters](ChoiceParameters.md) select a module's structure per
+instance at elaboration time without duplicating wrapper modules.

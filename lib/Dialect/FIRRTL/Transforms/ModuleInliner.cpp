@@ -228,12 +228,75 @@ static InstanceOp getInlinableInstance(Operation *op) {
 /// A choice is a property value which may only be sourced by a choice constant
 /// or by the corresponding input of the containing module.  Inlining the module
 /// would have to forward the choice through a property wire, which the choice
-/// contract does not allow.  Such modules are therefore kept instantiated until
-/// the choice parameters are materialized.
+/// contract does not allow.  Such ports are therefore substituted directly by
+/// the value driving them in the parent instead (see `resolveChoiceSource`).
 static bool moduleHasChoicePorts(FModuleLike module) {
   return llvm::any_of(module.getPortTypes(), [](Attribute type) {
     return type_isa<ChoiceType>(cast<TypeAttr>(type).getValue());
   });
+}
+
+/// Return the unique 'firrtl.propassign' driving `value`, or null if there is
+/// not exactly one.  A choice input port of an instance is driven by exactly
+/// one such assignment in well-formed IR; a different or additional use means
+/// the port cannot be substituted.
+static PropAssignOp getChoiceDriver(Value value) {
+  PropAssignOp assignment;
+  for (auto *user : value.getUsers()) {
+    auto propassign = dyn_cast<PropAssignOp>(user);
+    if (!propassign || propassign.getDest() != value)
+      return {};
+    if (assignment)
+      return {};
+    assignment = propassign;
+  }
+  return assignment;
+}
+
+/// Whether `src` is a legal source for a substituted choice value: a choice
+/// constant, or an input port of the containing module.
+static bool isChoiceSourceLegal(Value src) {
+  if (src.getDefiningOp<ChoiceConstantOp>())
+    return true;
+  auto arg = dyn_cast<BlockArgument>(src);
+  return arg && isa<FModuleLike>(arg.getOwner()->getParentOp());
+}
+
+/// Whether every choice input port of `target` can be substituted when inlining
+/// the instance `inst`.
+///
+/// The substitution replaces the port with the value that drives it in the
+/// parent, so each choice port must be driven by exactly one
+/// 'firrtl.propassign' whose source is a choice constant or a containing-module
+/// input port.  Such a port may not carry an inner symbol or annotations, which
+/// would have no representation once the port is gone.
+static bool canSubstituteChoicePorts(InstanceOp inst, FModuleLike target) {
+  auto portInfo = target.getPorts();
+  for (unsigned i = 0, e = target.getNumPorts(); i < e; ++i) {
+    if (!isa<ChoiceType>(portInfo[i].type))
+      continue;
+    if (portInfo[i].sym || !portInfo[i].annotations.empty())
+      return false;
+    auto driver = getChoiceDriver(inst.getResult(i));
+    if (!driver || !isChoiceSourceLegal(driver.getSrc()))
+      return false;
+  }
+  return true;
+}
+
+/// Resolve the value that substitutes a choice port while inlining.
+///
+/// A source that has already been cloned or remapped is reused.  A choice
+/// constant is re-created at the insertion point so that it dominates the
+/// inlined body: the original may appear after the instance in the parent.  A
+/// containing-module input port is used as-is.
+static Value resolveChoiceSource(IRMapping &mapper, OpBuilder &builder,
+                                 Value src) {
+  if (mapper.contains(src))
+    return mapper.lookup(src);
+  if (auto constant = src.getDefiningOp<ChoiceConstantOp>())
+    return builder.clone(*constant.getOperation())->getResult(0);
+  return src;
 }
 
 /// Module facts regarding inlining.
@@ -414,34 +477,49 @@ InliningFacts::compute(CircuitOp circuit, InstanceGraph &instanceGraph,
         return emitError(module.getLoc()) << "inline/flatten annotations are "
                                              "only valid on a 'firrtl.module'";
 
-      // Does anything opaque (see getInlinableInstance) instantiate this?
-      auto instantiators = instanceGraph.lookup(module)->uses();
-      auto opaqueRecIt = llvm::find_if(instantiators, [](InstanceRecord *rec) {
-        return !getInlinableInstance(rec->getInstance());
-      });
-      bool hasOpaqueUse = opaqueRecIt != instantiators.end();
-
-      // Modules with elaboration-time choice parameters cannot be inlined and
-      // are instantiated like a module with an opaque use.
+      // A use cannot be inlined if the pass cannot splice through the
+      // operation (see getInlinableInstance), or if it is an instance of a
+      // module with elaboration-time choice parameters whose choice ports
+      // cannot be substituted at that site.
       info.hasChoicePorts = moduleHasChoicePorts(module);
+      auto instantiators = instanceGraph.lookup(module)->uses();
+      InstanceRecord *opaqueRec = nullptr;
+      InstanceRecord *choiceRec = nullptr;
+      for (auto *rec : instantiators) {
+        auto inst = getInlinableInstance(rec->getInstance());
+        if (!inst) {
+          if (!opaqueRec)
+            opaqueRec = rec;
+          continue;
+        }
+        if (info.hasChoicePorts && !canSubstituteChoicePorts(inst, module)) {
+          if (!choiceRec)
+            choiceRec = rec;
+        }
+      }
+      bool hasOpaqueUse = opaqueRec || choiceRec;
 
-      if (!module.canDiscardOnUseEmpty() || hasOpaqueUse ||
-          info.hasChoicePorts) {
+      if (!module.canDiscardOnUseEmpty() || hasOpaqueUse) {
         info.isLive = true;
         info.hasUnflattenedPath = true;
       }
       if (info.hasInline && hasOpaqueUse) {
-        auto diag = mlir::emitWarning(module.getLoc())
-                    << "module marked inline is also instantiated by an "
-                       "operation that cannot be inlined; it is inlined only "
-                       "into its 'firrtl.instance' parents and retained";
-        diag.attachNote((*opaqueRecIt)->getInstance()->getLoc())
-            << "instantiated here";
+        if (choiceRec) {
+          auto diag = mlir::emitWarning(module.getLoc())
+                      << "module marked inline has elaboration-time choice "
+                         "parameters that cannot be forwarded into an inline "
+                         "parent; it is retained until they are materialized";
+          diag.attachNote(choiceRec->getInstance()->getLoc())
+              << "instantiated here";
+        } else {
+          auto diag = mlir::emitWarning(module.getLoc())
+                      << "module marked inline is also instantiated by an "
+                         "operation that cannot be inlined; it is inlined only "
+                         "into its 'firrtl.instance' parents and retained";
+          diag.attachNote(opaqueRec->getInstance()->getLoc())
+              << "instantiated here";
+        }
       }
-      if (info.hasInline && info.hasChoicePorts)
-        mlir::emitWarning(module.getLoc())
-            << "module marked inline has elaboration-time choice parameters "
-               "and is retained until they are materialized";
       continue;
     }
 
@@ -1367,9 +1445,15 @@ private:
     ModuleInliningContext &mic;              ///< Top-level inlining context.
     InnerRefToNewNameMap relocatedInnerSyms; ///< Inner-ref rename map.
     SmallVector<Operation *> newOps;         ///< All cloned operations.
-    SmallVector<Value> wires;                ///< Wires created for ports.
-    FModuleOp childModule;                   ///< The module being inlined.
-    Value debugScope;                        ///< Debug scope of the instance.
+    /// One substitutable value per port, pushed in port order.  A base-typed
+    /// port holds its replacement wire; a choice port holds the value driving
+    /// it in the parent (see `mapPortsToWires`).
+    SmallVector<Value> wires;
+    /// 'firrtl.propassign' drivers consumed by a choice substitution.  The
+    /// walk skips cloning these; they have no representation in the parent.
+    SmallVector<Operation *> consumedDrivers;
+    FModuleOp childModule; ///< The module being inlined.
+    Value debugScope;      ///< Debug scope of the instance.
     /// VNLAs active at this level, id-sorted (I6; see setActiveNLAsForChild).
     SmallVector<VirtualNLA *> activeNLAs;
 
@@ -1436,8 +1520,12 @@ private:
 
   /// Rewrite the ports of a module as wires.
   /// This is similar to cloneAndRename, but operating on ports.
-  /// Wires are added to il.wires.
-  void mapPortsToWires(StringRef prefix, InliningLevel &il, IRMapping &mapper);
+  /// Values are added to il.wires, one per port in port order: a wire for a
+  /// base-typed port, the driving parent value for a choice port.  Choice
+  /// drivers that are consumed are appended to `consumedDrivers`.
+  void mapPortsToWires(StringRef prefix, InliningLevel &il, IRMapping &mapper,
+                       InstanceOp instance,
+                       SmallVectorImpl<Operation *> &consumedDrivers);
 
   //===- P3: the walk -----------------------------------------------------===//
 
@@ -1827,12 +1915,27 @@ void Inliner::setActiveNLAsForChild(
 /// Create a wire per target-module port at the insertion point, mapping each
 /// port to its wire; the cloned body then reads the wires.
 void Inliner::mapPortsToWires(StringRef prefix, InliningLevel &il,
-                              IRMapping &mapper) {
+                              IRMapping &mapper, InstanceOp instance,
+                              SmallVectorImpl<Operation *> &consumedDrivers) {
   auto target = il.childModule;
   auto portInfo = target.getPorts();
   for (unsigned i = 0, e = target.getNumPorts(); i < e; ++i) {
     auto arg = target.getArgument(i);
     auto type = type_cast<FIRRTLType>(arg.getType());
+
+    // A choice input port has no wire: nothing can read a property wire.  Use
+    // the value driving the port in the parent directly.  The instance result
+    // is later RAUW'd to it (or mapped to it), which renders the driving
+    // 'firrtl.propassign' a self-assignment the walk drops.
+    if (isa<ChoiceType>(type)) {
+      auto driver = getChoiceDriver(instance.getResult(i));
+      assert(driver && "choice port must be substitutable");
+      Value sub = resolveChoiceSource(mapper, il.mic.b, driver.getSrc());
+      consumedDrivers.push_back(driver);
+      il.wires.push_back(sub);
+      mapper.map(arg, sub);
+      continue;
+    }
 
     auto oldSymAttr = portInfo[i].sym;
     auto newSymAttr =
@@ -1992,6 +2095,11 @@ LogicalResult Inliner::processInto(StringRef prefix, InliningLevel &il,
                           << il.mic.module.getModuleName() << "\n");
 
   auto visit = [&](Operation *op) {
+    // A choice substitution consumed this 'firrtl.propassign'.  It has no
+    // representation in the parent, so do not clone it.
+    if (llvm::is_contained(il.consumedDrivers, op))
+      return success();
+
     // If the pass can't inline through it, clone it and continue.
     auto instance = getInlinableInstance(op);
     if (!instance) {
@@ -2011,15 +2119,20 @@ LogicalResult Inliner::processInto(StringRef prefix, InliningLevel &il,
 
     // Flatten inlines every child; otherwise only those marked for it.
     // A child the pass keeps is cloned as a live instance.
-    // Modules with elaboration-time choice parameters are never inlined: their
-    // choice property ports have no representation in the parent module.
-    if (inliningFacts.hasChoicePorts(childModule)) {
+    // A module with elaboration-time choice parameters is inlined by
+    // substituting each choice port with its driving value, which is only
+    // possible when every choice port of this instance is substitutable.
+    if (inliningFacts.hasChoicePorts(childModule) &&
+        !canSubstituteChoicePorts(instance, childModule)) {
       if (flatten) {
         instance->emitError("cannot flatten instance")
                 .attachNote(childModule.getLoc())
-            << "module has elaboration-time choice parameters";
+            << "module has an elaboration-time choice parameter that cannot "
+               "be forwarded into the parent";
         return failure();
       }
+      // Retain the instance.  A module with an unsubstitutable site is kept
+      // live by the analysis, whether or not it carries an inline mark.
       assert(inliningFacts.isLive(childModule) &&
              "a kept child module must be live");
       cloneAndRename(prefix, il, mapper, *op);
@@ -2044,7 +2157,8 @@ LogicalResult Inliner::processInto(StringRef prefix, InliningLevel &il,
 
     // Create the wire mapping for results + ports.
     auto nestedPrefix = (prefix + instance.getName() + "_").str();
-    mapPortsToWires(nestedPrefix, childIL, mapper);
+    mapPortsToWires(nestedPrefix, childIL, mapper, instance,
+                    il.consumedDrivers);
     mapResultsToWires(mapper, childIL.wires, instance);
 
     // A flatten-marked child switches its whole subtree into flatten mode.
@@ -2059,6 +2173,11 @@ LogicalResult Inliner::processInto(StringRef prefix, InliningLevel &il,
 
 LogicalResult Inliner::processInstances(FModuleOp module, bool flatten) {
   ModuleInliningContext mic(module);
+
+  // 'firrtl.propassign' drivers consumed by choice-port substitution at this
+  // module's top level.  Erased after the walk: RAUW'ing the port results has
+  // already redirected them to the substituted value.
+  SmallVector<Operation *> consumedDrivers;
 
   LLVM_DEBUG(llvm::dbgs() << "inlining instances within "
                           << module.getNameAttr() << "...\n");
@@ -2077,13 +2196,16 @@ LogicalResult Inliner::processInstances(FModuleOp module, bool flatten) {
     }
 
     // Flatten inlines every child; otherwise only those marked for it.
-    // Modules with elaboration-time choice parameters are never inlined: their
-    // choice property ports have no representation in the parent module.
-    if (inliningFacts.hasChoicePorts(target)) {
+    // A module with elaboration-time choice parameters is inlined by
+    // substituting each choice port with its driving value, which is only
+    // possible when every choice port of this instance is substitutable.
+    if (inliningFacts.hasChoicePorts(target) &&
+        !canSubstituteChoicePorts(instance, target)) {
       if (flatten) {
         instance->emitError("cannot flatten instance")
                 .attachNote(target.getLoc())
-            << "module has elaboration-time choice parameters";
+            << "module has an elaboration-time choice parameter that cannot "
+               "be forwarded into the parent";
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
@@ -2108,7 +2230,7 @@ LogicalResult Inliner::processInstances(FModuleOp module, bool flatten) {
     createDebugScope(childIL, instance);
 
     auto nestedPrefix = (instance.getName() + "_").str();
-    mapPortsToWires(nestedPrefix, childIL, mapper);
+    mapPortsToWires(nestedPrefix, childIL, mapper, instance, consumedDrivers);
     for (unsigned i = 0, e = instance.getNumResults(); i < e; ++i)
       instance.getResult(i).replaceAllUsesWith(childIL.wires[i]);
 
@@ -2122,9 +2244,13 @@ LogicalResult Inliner::processInstances(FModuleOp module, bool flatten) {
     return WalkResult::skip();
   };
 
-  return failure(module.getBodyBlock()
-                     ->walk<mlir::WalkOrder::PreOrder>(visit)
-                     .wasInterrupted());
+  if (module.getBodyBlock()
+          ->walk<mlir::WalkOrder::PreOrder>(visit)
+          .wasInterrupted())
+    return failure();
+  for (auto *driver : consumedDrivers)
+    driver->erase();
+  return success();
 }
 
 void Inliner::createDebugScope(InliningLevel &il, InstanceOp instance,

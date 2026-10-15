@@ -55,9 +55,9 @@ Use `ninja -C build check-circt` before declaring this phase complete. Any pass 
 built on it (instance info, NLA tables, FIRRTL reductions, field sources)
 already treat it as an instance-like operation which references all of its
 candidate modules.  The remaining work is per-pass handling, summarized below.
-Only `firrtl-lower-classes`, `firrtl-inliner`, and
-`firrtl-extract-instances` cannot preserve an unresolved choice and diagnose
-instead.
+`firrtl-lower-classes` and `firrtl-extract-instances` cannot preserve an
+unresolved choice and diagnose instead; the inliner forwards a choice through
+inline parents by substituting the choice ports.
 
 | Area | Passes | V1 behavior | Regression test |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@ instead.
 | OM metadata | `firrtl-lower-classes` | Diagnoses a remaining choice port instead of lowering it as OM metadata; ordinary properties (classes, strings, integers) still lower to `om.*`. | `choice-types-lowering-errors.mlir`, `choice-parameters-to-om.mlir` |
 | Deduplication | `firrtl-dedup` | Compares formal parameter declarations, selector mappings and candidate module lists structurally, and rewrites `moduleNames`/`portNames` when a candidate module is deduplicated away. | `dedup-choice-parameters.mlir` |
 | Type lowering | `firrtl-lower-types` | Flattens aggregate ports of a parameterized choice like any other instance and preserves the selector or materialized selector parameter. | `lower-types-param-instance-choice.mlir` |
-| Inlining | `firrtl-inliner` | A module with choice parameters is retained: forwarding a choice into the parent would need a property wire. Inline annotations produce a warning, flattening such a module is an error. | `inliner-choice-parameters.mlir`, `inliner-choice-parameters-errors.mlir` |
+| Inlining | `firrtl-inliner` | A module with choice parameters is inlined by substituting each choice port with its driving value, a choice constant or a containing-module parameter. A port driven any other way is retained with a warning, and flattening such a module is an error. | `inliner-choice-parameters.mlir`, `inliner-choice-parameters-errors.mlir`, `paraminstchoice-inline.fir` |
 | Extraction | `firrtl-extract-instances` | Only plain instances are extracted, and the op rejects annotations. An extraction annotation on a candidate module of a parameterized choice is diagnosed rather than silently dropped. | `extract-instances-choice-parameters-errors.mlir` |
 | Layers | `firrtl-layer-sink`, `firrtl-lower-layers`, `firrtl-check-layers` | Layer requirements are cleared on all instance-like operations, and the verifier rejects layer requirements on a parameterized choice that is instantiated directly in a layer. | `lower-layers-choice-parameters.mlir` |
 | XMR and paths | `firrtl-lower-xmr`, `firrtl-resolve-paths`, `firrtl-resolve-traces`, `firrtl-probes-to-signals`, `firrtl-inner-symbol-dce` | A choice is a property value, and the op rejects probe ports, inner symbols and annotations, so no XMR, path or inner reference can target or traverse it. | `param-instance-choice-errors.mlir`, `choice-types-hardware-errors.mlir` |
@@ -77,16 +77,17 @@ instead.
 ### Diagnostics for unsupported constructs
 
 - `firrtl-lower-classes`: `cannot lower choice port '<port>' as OM metadata; run choice-parameter materialization first`.
-- `firrtl-inliner`: `module marked inline has elaboration-time choice parameters and is retained until they are materialized`, and `cannot flatten instance` when a flatten annotation requires splicing such a module into its parent.
+- `firrtl-inliner`: `module marked inline has elaboration-time choice parameters that cannot be forwarded into an inline parent; it is retained until they are materialized` when a choice port is driven by anything other than a choice constant or a containing-module parameter, and `cannot flatten instance` when a flatten annotation requires splicing such a module into its parent.
 - `firrtl-extract-instances`: `cannot extract a parameterized instance choice of module '<module>'`.
 - `firrtl-materialize-choice-parameters`: missing or duplicate `firrtl.propassign` for a choice parameter, and a selector that is neither a choice constant nor a containing-module parameter.
 - `firrtl.param_instance_choice` verification: unknown choice domain or case, duplicate case, candidate modules that are not internal modules or external modules (including `firrtl.intmodule`), probe ports, inner symbols, annotations, and a selector produced by a hardware operation.
 
 ### Deferred
 
-- Inlining does not yet forward choice parameters into the parent; inline-marked
-  modules are retained (with a warning) until the choice parameters are
-  materialized.
+- Inlining forwards choice parameters into an inline parent only when every
+  choice port is driven by a choice constant or a containing-module parameter.
+  Other sources, such as a property wire, retain the module (with a warning)
+  until the choice parameters are materialized.
 
 `firrtl-lower-signatures` is scheduled by `firtool` for FIRRTL text inputs and
 now rewrites parameterized choices like option-based ones (item 11).
