@@ -942,6 +942,19 @@ void LowerClassesPass::runOnOperation() {
   // Get the CircuitOp.
   CircuitOp circuit = getOperation();
 
+  // Choice properties are elaboration parameters, not OM metadata. They must
+  // be materialized by the dedicated parameter pass before property lowering.
+  // Failing here prevents LowerClasses from silently erasing their ports.
+  for (auto moduleLike : circuit.getOps<FModuleLike>())
+    for (unsigned i = 0, e = moduleLike.getNumPorts(); i < e; ++i)
+      if (isa<ChoiceType>(moduleLike.getPortType(i))) {
+        moduleLike.emitOpError()
+            << "cannot lower choice port '" << moduleLike.getPortName(i)
+            << "' as OM metadata; run choice-parameter materialization first";
+        signalPassFailure();
+        return;
+      }
+
   // Get the InstanceGraph, InstanceInfo, and SymbolTable.
   instanceGraph = &getAnalysis<InstanceGraph>();
   instanceInfo = &getAnalysis<InstanceInfo>();

@@ -148,6 +148,11 @@ static LogicalResult customTypePrinter(Type type, AsmPrinter &os) {
       .Case<FIntegerType>([&](auto integerType) { os << "integer"; })
       .Case<BoolType>([&](auto boolType) { os << "bool"; })
       .Case<DoubleType>([&](auto doubleType) { os << "double"; })
+      .Case<ChoiceType>([&](auto choiceType) {
+        os << "choice<";
+        os.printSymbolName(choiceType.getDomain().getValue());
+        os << ">";
+      })
       .Case<ListType>([&](auto listType) {
         os << "list<";
         printNestedType(listType.getElementType(), os);
@@ -516,6 +521,16 @@ static OptionalParseResult customTypeParser(AsmParser &parser, StringRef name,
       return failure();
     }
     result = DoubleType::get(parser.getContext());
+    return success();
+  }
+  if (name == "choice") {
+    if (isConst)
+      return parser.emitError(parser.getNameLoc(), "choices cannot be const");
+    FlatSymbolRefAttr domain;
+    if (parser.parseLess() || parser.parseAttribute(domain) ||
+        parser.parseGreater())
+      return failure();
+    result = ChoiceType::get(context, domain);
     return success();
   }
   if (name == "list") {

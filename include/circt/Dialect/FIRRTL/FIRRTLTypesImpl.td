@@ -616,6 +616,14 @@ def DoubleImpl : PropImplType<"Double"> {
   let typeName = "firrtl.propDouble";
 }
 
+def ChoiceImpl : PropImplType<"Choice", [], "::circt::firrtl::PropertyType"> {
+  let summary = [{An elaboration-time choice from a circuit-scoped domain.}];
+  let parameters = (ins "FlatSymbolRefAttr":$domain);
+  let genStorageClass = true;
+  let genAccessors = true;
+  let typeName = "firrtl.propChoice";
+}
+
 def FStringImpl : FIRRTLImplType<"FString", [], "::circt::firrtl::FIRRTLType" > {
   let summary = "A format string type";
   let parameters = (ins);
