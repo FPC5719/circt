@@ -58,6 +58,8 @@ void FieldSource::visitOp(Operation *op) {
     return visitInst(inst);
   if (auto inst = dyn_cast<InstanceChoiceOp>(op))
     return visitInstChoice(inst);
+  if (auto inst = dyn_cast<ParamInstanceChoiceOp>(op))
+    return visitParamInstChoice(inst);
 
   // Track all other definitions of aggregates.
   if (op->getNumResults()) {
@@ -125,6 +127,11 @@ void FieldSource::visitInst(InstanceOp inst) {
 }
 
 void FieldSource::visitInstChoice(InstanceChoiceOp inst) {
+  for (auto r : inst.getResults())
+    makeNodeForValue(r, r, {}, foldFlow(r));
+}
+
+void FieldSource::visitParamInstChoice(ParamInstanceChoiceOp inst) {
   for (auto r : inst.getResults())
     makeNodeForValue(r, r, {}, foldFlow(r));
 }

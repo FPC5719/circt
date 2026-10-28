@@ -69,6 +69,40 @@ static Value moveNameHint(OpResult old, Value passthrough) {
   return passthrough;
 }
 
+namespace {
+
+struct FoldLiteralParamInstanceChoice
+    : public OpRewritePattern<ParamInstanceChoiceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ParamInstanceChoiceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto selector = op.getSelector().getDefiningOp<ChoiceConstantOp>();
+    if (!selector)
+      return failure();
+
+    FlatSymbolRefAttr target = op.getDefaultTargetAttr();
+    auto moduleNames = op.getModuleNamesAttr();
+    for (size_t i = 0, e = op.getCaseNamesAttr().size(); i != e; ++i)
+      if (cast<SymbolRefAttr>(op.getCaseNamesAttr()[i]) ==
+          selector.getCaseSymbol()) {
+        target = cast<FlatSymbolRefAttr>(moduleNames[i + 1]);
+        break;
+      }
+
+    auto instance = InstanceOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(), target, op.getNameAttr(),
+        op.getNameKindAttr(), op.getPortDirectionsAttr(), op.getPortNamesAttr(),
+        op.getDomainInfoAttr(), op.getAnnotationsAttr(),
+        op.getPortAnnotationsAttr(), op.getLayersAttr(), /*lowerToBind=*/{},
+        /*doNotPrint=*/{}, /*inner_sym=*/{});
+    rewriter.replaceOp(op, instance.getResults());
+    return success();
+  }
+};
+
+} // namespace
+
 // Declarative canonicalization patterns
 namespace circt {
 namespace firrtl {
@@ -401,6 +435,15 @@ OpFoldResult BoolConstantOp::fold(FoldAdaptor adaptor) {
 OpFoldResult DoubleConstantOp::fold(FoldAdaptor adaptor) {
   assert(adaptor.getOperands().empty() && "constant has no operands");
   return getValueAttr();
+}
+
+//===----------------------------------------------------------------------===//
+// ParamInstanceChoice Operator
+//===----------------------------------------------------------------------===//
+
+void ParamInstanceChoiceOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.insert<FoldLiteralParamInstanceChoice>(context);
 }
 
 //===----------------------------------------------------------------------===//

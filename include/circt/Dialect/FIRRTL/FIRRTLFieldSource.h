@@ -69,6 +69,7 @@ private:
   void visitMem(MemOp mem);
   void visitInst(InstanceOp inst);
   void visitInstChoice(InstanceChoiceOp inst);
+  void visitParamInstChoice(ParamInstanceChoiceOp inst);
 
   void makeNodeForValue(Value dst, Value src, ArrayRef<int64_t> path,
                         Flow flow);

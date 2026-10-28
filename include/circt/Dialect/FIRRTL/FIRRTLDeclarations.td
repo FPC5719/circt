@@ -244,6 +244,57 @@ def InstanceChoiceOp : HardwareDeclOp<"instance_choice", [
   ];
 }
 
+def ParamInstanceChoiceOp : HardwareDeclOp<"param_instance_choice", [
+    DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+    DeclareOpInterfaceMethods<FInstanceLike>,
+    DeclareOpInterfaceMethods<InstanceGraphInstanceOpInterface, [
+      "getInstanceName", "getInstanceNameAttr", "getReferencedModuleNamesAttr"
+    ]>
+  ]> {
+  let summary = "Instantiate a module selected by an elaboration-time choice";
+
+  let description = [{
+    This operation is the parameterization counterpart of `instance_choice`.
+    Its selector is a `!firrtl.choice` property, rather than an Option.  The
+    default target is the first entry in `moduleNames`; subsequent entries are
+    paired with the cases in `caseNames`.  All targets must have identical
+    port signatures.
+
+    This operation is elaboration-only and must be materialized to an ordinary
+    `firrtl.instance` before hardware lowering.
+  }];
+
+  let arguments = (ins ChoiceType:$selector,
+                       FlatSymbolRefArrayAttr:$moduleNames,
+                       SymbolRefArrayAttr:$caseNames,
+                       StrAttr:$name, NameKindAttr:$nameKind,
+                       DenseBoolArrayAttr:$portDirections,
+                       StrArrayAttr:$portNames, DomainInfoAttr:$domainInfo,
+                       AnnotationArrayAttr:$annotations,
+                       PortAnnotationsAttr:$portAnnotations,
+                       LayerArrayAttr:$layers,
+                       OptionalAttr<InnerSymAttr>:$inner_sym);
+
+  let results = (outs Variadic<AnyType>:$results);
+
+  let hasVerifier = 1;
+  let hasCanonicalizer = 1;
+
+  let extraClassDeclaration = [{
+    /// Return the default target attribute.
+    FlatSymbolRefAttr getDefaultTargetAttr() {
+      return llvm::cast<FlatSymbolRefAttr>(getModuleNamesAttr()[0]);
+    }
+
+    /// Return the target for a choice case or the default if it is unmapped.
+    FlatSymbolRefAttr getTargetOrDefaultAttr(ChoiceCaseOp choiceCase);
+
+    /// Return the list of case-module mappings.
+    SmallVector<std::pair<SymbolRefAttr, FlatSymbolRefAttr>, 1>
+    getTargetChoices();
+  }];
+}
+
 
 def MemOp : HardwareDeclOp<"mem", [DeclareOpInterfaceMethods<CombDataflow>]> {
   let summary = "Define a new mem";
