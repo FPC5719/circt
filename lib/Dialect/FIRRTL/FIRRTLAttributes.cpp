@@ -106,3 +106,17 @@ void ParamDeclAttr::print(AsmPrinter &p) const {
   }
   p << ">";
 }
+
+//===----------------------------------------------------------------------===//
+// ParamDeclRefAttr
+//===----------------------------------------------------------------------===//
+
+Attribute ParamDeclRefAttr::parse(AsmParser &p, Type type) {
+  StringAttr name;
+  if (p.parseLess() || p.parseAttribute(name) || p.parseGreater() ||
+      (!type && (p.parseColon() || p.parseType(type))))
+    return Attribute();
+  return ParamDeclRefAttr::get(name, type);
+}
+
+void ParamDeclRefAttr::print(AsmPrinter &p) const { p << "<" << getName() << ">"; }

@@ -884,8 +884,7 @@ void FIRRTLModuleLowering::lowerFileHeader(CircuitOp op,
 
   // Helper function to emit #ifndef guard.
   auto emitGuard = [&](const char *guard, llvm::function_ref<void(void)> body) {
-    sv::IfDefOp::create(
-        b, guard, [] {}, body);
+    sv::IfDefOp::create(b, guard, [] {}, body);
   };
 
   if (state.usedFileDescriptorLib)
@@ -1013,17 +1012,16 @@ FIRRTLModuleLowering::lowerPorts(ArrayRef<PortInfo> firrtlPorts,
   return success();
 }
 
-/// Map the parameter specifier on the specified extmodule into the HWModule
-/// representation for parameters.  If `ignoreValues` is true, all the values
-/// are dropped.
-static ArrayAttr getHWParameters(FExtModuleOp module, bool ignoreValues) {
-  auto params = llvm::map_range(module.getParameters(), [](Attribute a) {
-    return cast<ParamDeclAttr>(a);
-  });
+/// Map FIRRTL parameter declarations into HW parameter declarations. If
+/// `ignoreValues` is true, all values are dropped from module declarations.
+static ArrayAttr getHWParameters(ArrayAttr parameters, MLIRContext *context,
+                                 bool ignoreValues) {
+  auto params = llvm::map_range(
+      parameters, [](Attribute a) { return cast<ParamDeclAttr>(a); });
   if (params.empty())
     return {};
 
-  Builder builder(module);
+  Builder builder(context);
 
   // Map the attributes over from firrtl attributes to HW attributes
   // directly.  MLIR's DictionaryAttr always stores keys in the dictionary
@@ -1033,11 +1031,19 @@ static ArrayAttr getHWParameters(FExtModuleOp module, bool ignoreValues) {
     auto name = entry.getName();
     auto type = entry.getType();
     auto value = ignoreValues ? Attribute() : entry.getValue();
+    if (value)
+      if (auto ref = dyn_cast<firrtl::ParamDeclRefAttr>(value))
+        value = hw::ParamDeclRefAttr::get(ref.getName(), ref.getType());
     auto paramAttr =
         hw::ParamDeclAttr::get(builder.getContext(), name, type, value);
     newParams.push_back(paramAttr);
   }
   return builder.getArrayAttr(newParams);
+}
+
+static ArrayAttr getHWParameters(FModuleLike module, bool ignoreValues) {
+  return getHWParameters(module.getParameters(), module.getContext(),
+                         ignoreValues);
 }
 
 bool FIRRTLModuleLowering::handleForceNameAnnos(
@@ -1362,8 +1368,10 @@ FIRRTLModuleLowering::lowerModule(FModuleOp oldModule, Block *topLevelModule,
   // Build the new hw.module op.
   auto builder = OpBuilder::atBlockEnd(topLevelModule);
   auto nameAttr = builder.getStringAttr(oldModule.getName());
-  auto newModule =
-      hw::HWModuleOp::create(builder, oldModule.getLoc(), nameAttr, ports);
+  auto parameters = getHWParameters(oldModule, /*ignoreValues=*/true);
+  auto newModule = hw::HWModuleOp::create(
+      builder, oldModule.getLoc(), nameAttr, ports,
+      parameters ? parameters : builder.getArrayAttr({}));
 
   if (auto comment = oldModule->getAttrOfType<StringAttr>("comment"))
     newModule.setCommentAttr(comment);
@@ -3284,8 +3292,7 @@ void FIRRTLLowering::addToAlwaysBlock(
       auto createIfOp = [&]() {
         // It is weird but intended. Here we want to create an empty sv.if
         // with an else block.
-        insideIfOp = sv::IfOp::create(
-            builder, reset, [] {}, [] {});
+        insideIfOp = sv::IfOp::create(builder, reset, [] {}, [] {});
       };
       if (resetStyle == sv::ResetType::AsyncReset) {
         sv::EventControl events[] = {clockEdge, resetEdge};
@@ -4100,10 +4107,15 @@ LogicalResult FIRRTLLowering::visitDecl(InstanceOp oldInstance) {
     return failure();
   }
 
-  // If this is a referenced to a parameterized extmodule, then bring the
-  // parameters over to this instance.
+  // Materialized choice parameters live on the instance. Extmodule
+  // parameters continue to use their declared values when no instance
+  // parameter metadata is present.
   ArrayAttr parameters;
-  if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldModule))
+  if (auto instanceParameters =
+          oldInstance->getAttrOfType<ArrayAttr>("parameters"))
+    parameters = getHWParameters(instanceParameters, oldInstance.getContext(),
+                                 /*ignoreValues=*/false);
+  else if (auto oldExtModule = dyn_cast<FExtModuleOp>(oldModule))
     parameters = getHWParameters(oldExtModule, /*ignoreValues=*/false);
 
   // Decode information about the input and output ports on the referenced

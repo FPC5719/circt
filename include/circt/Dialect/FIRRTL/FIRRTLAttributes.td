@@ -164,6 +164,25 @@ def ParamDeclAttr : AttrDef<FIRRTLDialect, "ParamDecl", [TypedAttrInterface]> {
 def ParamDeclArrayAttr
   : TypedArrayAttrBase<ParamDeclAttr, "parameter array attribute">;
 
+/// This attribute models a reference to a named parameter within a module.
+/// The type must match the referenced parameter declaration.
+def ParamDeclRefAttr : AttrDef<FIRRTLDialect, "ParamDeclRef",
+                               [TypedAttrInterface]> {
+  let summary = "Reference a module parameter value";
+  let parameters = (ins "::mlir::StringAttr":$name,
+                        AttributeSelfTypeParameter<"">:$type);
+  let mnemonic = "param.decl.ref";
+
+  let builders = [
+    AttrBuilderWithInferredContext<(ins "::mlir::StringAttr":$name,
+                                        "::mlir::Type":$type), [{
+      return get(name.getContext(), name, type);
+    }]>
+  ];
+
+  let hasCustomAssemblyFormat = 1;
+}
+
 /// An attribute holding information about memory initialization.
 def MemoryInitAttr : AttrDef<FIRRTLDialect, "MemoryInit"> {
   let mnemonic = "meminit";
