@@ -49,7 +49,7 @@ jobs:
       - name: Configure
         run: |
           cmake -G Ninja llvm/llvm -B build       \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo     \
+            -DCMAKE_BUILD_TYPE=Release            \
             -DLLVM_ENABLE_ASSERTIONS=ON           \
             -DLLVM_TARGETS_TO_BUILD=host          \
             -DLLVM_ENABLE_PROJECTS=mlir           \
