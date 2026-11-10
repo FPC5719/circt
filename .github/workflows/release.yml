@@ -31,6 +31,16 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Prepare git metadata
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [[ "$(git rev-parse --is-shallow-repository)" == "true" ]]; then
+            git fetch --unshallow --tags --force --no-recurse-submodules origin
+          else
+            git fetch --tags --force --no-recurse-submodules origin
+          fi
+
       - name: Get version tag
         shell: bash
         run: |
@@ -55,6 +65,8 @@ jobs:
             -DLLVM_ENABLE_PROJECTS=mlir           \
             -DLLVM_EXTERNAL_PROJECTS=circt        \
             -DLLVM_EXTERNAL_CIRCT_SOURCE_DIR="$PWD" \
+            -DCIRCT_RELEASE_TAG_ENABLED=ON        \
+            -DCIRCT_RELEASE_TAG="firtool-${VERSION}" \
             -DLLVM_ENABLE_LLD=ON                  \
             -DLLVM_BUILD_EXAMPLES=OFF             \
             -DLLVM_ENABLE_ZSTD=OFF                \
@@ -68,6 +80,17 @@ jobs:
       - name: Rename
         run: |
           mv build/bin/firtool firtool-${{ env.VERSION }}-${{ matrix.os }}
+
+      - name: Verify artifact version
+        shell: bash
+        run: |
+          ARTIFACT="firtool-${{ env.VERSION }}-${{ matrix.os }}"
+          VERSION_OUTPUT="$("./$ARTIFACT" --version)"
+          printf '%s\n' "$VERSION_OUTPUT"
+          if ! grep -Eq '^CIRCT firtool-[^[:space:]]+$' <<< "$VERSION_OUTPUT"; then
+            echo "::error::Artifact does not contain a valid firtool release version"
+            exit 1
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
